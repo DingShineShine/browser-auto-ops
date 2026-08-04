@@ -1,0 +1,14 @@
+.bao/
+.bao-cli-test/
+.bao-cli-test2/
+.pytest_cache/
+.idea/
+__pycache__/
+*.py[cod]
+.venv/
+.env
+dist/
+build/
+*.egg-info/
+page.png
+

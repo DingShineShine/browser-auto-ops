@@ -1,0 +1,35 @@
+[project]
+name = "browser-auto-ops"
+version = "0.1.0"
+description = "ADS/CDP-first browser automation engine with state-index actions, trace, network capture, and skill forge."
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.111",
+    "httpx>=0.27",
+    "playwright>=1.45",
+    "pydantic>=2.7",
+    "typer>=0.12",
+    "uvicorn>=0.30",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.2",
+    "pytest-asyncio>=0.23",
+]
+
+[project.scripts]
+bao = "browser_auto_ops.cli:app"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/browser_auto_ops"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"
+
