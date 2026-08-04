@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field
 
 
 ProviderName = Literal["adspower-cdp", "local-chrome", "chrome-direct", "cdp"]
+PublicBrowserType = Literal["chrome-direct", "ads"]
 ActionType = Literal[
     "click",
     "input_text",
@@ -49,8 +50,22 @@ class ProviderConfig(BaseModel):
     extra_args: list[str] = Field(default_factory=list)
 
 
+class BrowserIdentity(BaseModel):
+    browser_id: str = Field(default_factory=lambda: f"b_{uuid4().hex[:10]}")
+    type: PublicBrowserType
+    name: str
+    desc: str = ""
+    confirm_before_use: bool = False
+    provider_config: ProviderConfig
+    created_at: datetime = Field(default_factory=utc_now)
+    updated_at: datetime = Field(default_factory=utc_now)
+    meta: dict[str, Any] = Field(default_factory=dict)
+
+
 class BrowserSession(BaseModel):
     session_id: str = Field(default_factory=lambda: f"s_{uuid4().hex[:10]}")
+    name: str | None = None
+    browser_id: str | None = None
     provider: ProviderName
     status: Literal["running", "stopped", "error"] = "running"
     cdp_url: str | None = None

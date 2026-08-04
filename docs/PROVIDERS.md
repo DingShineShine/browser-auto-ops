@@ -1,20 +1,19 @@
-# Providers
+# Browser Types And Providers
 
-## `adspower-cdp`
+Employee-facing browser types are `chrome-direct` and `ads`. Lower-level provider names remain implementation details.
 
-Starts AdsPower and connects to `data.ws.puppeteer`.
+## `ads`
 
-If AdsPower returns `ws://127.0.0.1:port/...`, browser-auto-ops must run on the AdsPower host or use user-managed forwarding. v1 intentionally does not create SSH tunnels.
+Starts an AdsPower/ADS profile and connects to `data.ws.puppeteer`.
 
-## `local-chrome`
-
-Starts a new isolated Chrome profile:
-
-```text
-chrome.exe --remote-debugging-port=<port> --user-data-dir=<isolated-dir>
+```bash
+bao browser create --type ads --name amazon-us-01 --desc "VPS AdsPower profile" --ads-base-url http://HOST:PORT --ads-user-id PROFILE_ID
+bao --session work browser open amazon-us-01 https://example.com
 ```
 
-This is local because it uses the machine's Chrome binary, but it does not attach to the user's everyday Chrome profile. It is closest to a clean local automation browser.
+If AdsPower returns `ws://127.0.0.1:port/...`, browser-auto-ops should run on the AdsPower/VPS host or through an authenticated sidecar. Do not expose raw CDP ports publicly.
+
+Internal provider: `adspower-cdp`.
 
 ## `chrome-direct`
 
@@ -26,7 +25,14 @@ Goal:
 control a real local Chrome profile through a local CDP endpoint
 ```
 
-Start:
+Create and open:
+
+```bash
+bao browser create --type chrome-direct --name local --desc "Employee current Chrome" --confirm-before-use
+bao --session local-task browser open local https://example.com --confirm
+```
+
+Legacy direct start still exists for development diagnostics:
 
 ```bash
 bao session start \
@@ -62,13 +68,8 @@ Manual direct launch example:
 chrome.exe --remote-debugging-port=9222 --user-data-dir="$env:LOCALAPPDATA\Google\Chrome\User Data"
 ```
 
-## `cdp`
+## Internal Helpers
 
-Connects to an existing endpoint:
-
-```text
-http://host:port
-ws://host:port/devtools/browser/<id>
-```
-
-It does not own or stop external browsers.
+- `adspower-cdp`: provider behind the public `ads` browser type.
+- `cdp`: generic endpoint connector used internally and for development diagnostics.
+- `local-chrome`: local isolated Chrome helper retained for diagnostics, not employee-facing.

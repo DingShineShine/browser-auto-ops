@@ -1,6 +1,6 @@
 ---
 name: browser-auto-ops
-description: "Use browser-auto-ops when the user asks to automate, inspect, or control ADS/AdsPower browsers, local Chrome, or generic CDP browser endpoints with the `bao` CLI/API; when they mention browser-auto-ops, bao, adspower-cdp, local-chrome, CDP state/index actions, observe/act/extract, network capture, trace, or Forge skill generation. Prefer this skill over browser-act when the browser source is AdsPower/ADS or an arbitrary CDP endpoint."
+description: "Use browser-auto-ops when the user asks to automate, inspect, or control enterprise browsers with the `bao` CLI/API, especially employee local Chrome through chrome-direct or company ADS/AdsPower browsers through the ads browser type. Prefer this skill over browser-act for company-managed AdsPower/ADS workflows."
 allowed-tools: Bash(bao:*)
 metadata:
   author: browser-auto-ops
@@ -23,49 +23,48 @@ Use this skill as the routing and operating guide for the local
 E:\code\work\browser-auto-ops
 ```
 
-The runtime provides:
+The runtime provides a BrowserAct-style command surface:
 
 - `bao` CLI
 - FastAPI app: `browser_auto_ops.server:app`
-- Providers: `adspower-cdp`, `local-chrome`, `chrome-direct`, `cdp`
+- Public browser types: `chrome-direct`, `ads`
 - BrowserAct-style `state -> indexed action -> verify`
-- Stagehand-style `observe / act / extract`
+- named sessions with `bao --session <name> ...`
 - network capture, trace, and Forge skill generation
 - `hover`, dangerous-action confirmation, and trace `summary.json`
 
 ## Mandatory First Step
 
-Before using the runtime, read:
+Before using the runtime, run:
 
-```text
-references/runtime.md
+```bash
+bao get-skills core
 ```
 
-It contains the current command syntax, provider rules, safety constraints, and
-troubleshooting notes.
+Follow the command syntax and safety constraints printed by the installed CLI.
+The CLI output is the source of truth for the currently installed version.
 
 ## Core Workflow
 
 Use the loop:
 
 ```text
-session start
+browser create/list
+  -> browser open with --session
   -> state
-  -> action or observe/act/extract
+  -> action or get/extract/network
   -> wait stable
   -> state again
-  -> stop when done
+  -> session close
 ```
 
-Old state indexes are temporary. Re-run `bao state <session_id>` after any page
+Old state indexes are temporary. Re-run `bao --session <name> state` after any page
 change before using another index.
 
 ## Provider Selection
 
-- Use `adspower-cdp` for AdsPower/ADS profiles when `ws.puppeteer` is reachable from this machine.
-- Use `local-chrome` for isolated local development, test pages, or automation that should not touch the user's everyday Chrome profile.
 - Use `chrome-direct` when the user asks to control the real local Chrome profile or wants BrowserAct-style local direct mode. Require explicit confirmation.
-- Use `cdp` for an already-running CDP endpoint, including manually forwarded remote Chrome.
+- Use `ads` for company-managed ADS/AdsPower profiles, preferably through the VPS-side browser-auto-ops sidecar.
 
 Do not use this skill to operate sessions created and owned by the real BrowserAct CLI.
 Use the separate `browser-act` skill for BrowserAct itself. The local `chrome-direct`

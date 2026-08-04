@@ -1,11 +1,11 @@
 # browser-auto-ops
 
-`browser-auto-ops` is a clean-room browser automation engine for ADS/AdsPower,
-local Chrome, and generic CDP endpoints.
+`browser-auto-ops` is a clean-room enterprise browser automation engine for
+employee local Chrome and company-managed ADS/AdsPower browsers.
 
 It implements the v1 plan:
 
-- Providers: `adspower-cdp`, `local-chrome`, `chrome-direct`, `cdp`
+- Public browser types: `chrome-direct`, `ads`
 - BrowserAct-style `state` with indexed interactive elements
 - Deterministic action executor with real browser events first, `hover`, and JS fallback
 - Executor-level confirmation gate for dangerous operations
@@ -17,7 +17,18 @@ It implements the v1 plan:
 CLI command:
 
 ```bash
-bao --help
+bao get-skills core
+```
+
+Core employee workflow:
+
+```bash
+bao browser create --type chrome-direct --name local --desc "Employee current Chrome" --confirm-before-use
+bao browser create --type ads --name amazon-us-01 --desc "VPS AdsPower profile" --ads-base-url http://HOST:PORT --ads-user-id PROFILE_ID
+bao --session report browser open amazon-us-01 https://example.com
+bao --session report state
+bao --session report click 3
+bao session close report
 ```
 
 ## Install For Desktop Agents

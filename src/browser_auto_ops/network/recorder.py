@@ -46,6 +46,12 @@ class NetworkRecorder:
     def get(self, request_id: str) -> NetworkRequestInfo | None:
         return self.requests.get(request_id)
 
+    def clear(self) -> int:
+        count = len(self.requests)
+        self.requests.clear()
+        self._by_playwright_request.clear()
+        return count
+
     def _on_request(self, request: Request) -> None:
         info = NetworkRequestInfo(
             url=request.url,

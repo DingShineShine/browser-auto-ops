@@ -2,17 +2,17 @@
 
 ## Goal
 
-Implement a clean-room browser automation engine with ADS/AdsPower, local Chrome, BrowserAct-style direct Chrome, and generic CDP providers:
+Implement a clean-room BrowserAct-style enterprise browser automation engine with two employee-facing browser types:
 
-- `adspower-cdp`: start an AdsPower profile and connect to `data.ws.puppeteer`.
-- `local-chrome`: launch an isolated local Chrome profile and connect over CDP.
 - `chrome-direct`: BrowserAct-style local direct mode for a real local Chrome profile, gated by explicit confirmation.
-- `cdp`: connect to any existing CDP endpoint.
+- `ads`: company-managed ADS/AdsPower profiles, preferably controlled from a VPS-side browser-auto-ops sidecar.
 
 The product shape is:
 
 ```text
-Provider connection
+Browser identity
+  -> named session
+  -> provider connection
   -> BrowserAct/Browser Use style state/index
   -> deterministic action executor
   -> Stagehand style observe/act/extract
@@ -26,16 +26,17 @@ Provider connection
 - Python package: `browser_auto_ops`
 - CLI: `bao`
 - API server: `browser_auto_ops.server:app`
-- Providers: `adspower-cdp`, `local-chrome`, `chrome-direct`, `cdp`
+- Public browser types: `chrome-direct`, `ads`
+- Internal provider helpers: `adspower-cdp`, `cdp`, and local development helpers
 - Docs: this `docs/` set
 - Tests: unit tests plus local/ADS smoke-test hooks
 
 ## Local Browser Semantics
 
-`local-chrome` and `chrome-direct` are intentionally different:
+`ads` and `chrome-direct` are intentionally different:
 
-- `local-chrome` is safe isolated automation. It starts a separate profile and does not touch the user's everyday Chrome state.
 - `chrome-direct` is BrowserAct-style direct local control. It can access the user's real Chrome profile state, so it requires `--confirm-direct` / `confirm_direct=true`. It discovers `DevToolsActivePort` and uses raw CDP instead of assuming `/json/version` works.
+- `ads` controls an AdsPower profile. In production, browser-auto-ops should run on the VPS/ADS host or through a sidecar so `ws.puppeteer` is not exposed publicly.
 
 ## Out Of Scope For v1
 

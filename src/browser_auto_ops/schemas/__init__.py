@@ -1,6 +1,7 @@
 from .models import (
     ActionRequest,
     ActionResult,
+    BrowserIdentity,
     BrowserSession,
     ElementLocator,
     ElementRect,
@@ -14,6 +15,7 @@ from .models import (
 __all__ = [
     "ActionRequest",
     "ActionResult",
+    "BrowserIdentity",
     "BrowserSession",
     "ElementLocator",
     "ElementRect",

@@ -4,7 +4,10 @@ import sys
 from pathlib import Path
 
 import pytest
+from typer.testing import CliRunner
 
+from browser_auto_ops.browsers import BrowserStore, provider_config_for_browser
+from browser_auto_ops.cli import app
 from browser_auto_ops.actions import ActionExecutor
 from browser_auto_ops.errors import ProviderError
 from browser_auto_ops.forge import ForgeEngine
@@ -15,6 +18,7 @@ from browser_auto_ops.safety import action_requires_confirmation, confirmation_r
 from browser_auto_ops.schemas import (
     ActionRequest,
     ActionResult,
+    BrowserIdentity,
     BrowserSession,
     ElementLocator,
     ElementRect,
@@ -25,6 +29,9 @@ from browser_auto_ops.schemas import (
 from browser_auto_ops.sessions import SessionStore
 from browser_auto_ops.trace import TraceRecorder
 from browser_auto_ops.trace.redaction import redact
+
+
+runner = CliRunner()
 
 
 def test_provider_registry() -> None:
@@ -108,6 +115,111 @@ def test_session_store_roundtrip(tmp_path: Path) -> None:
     assert loaded.cdp_url == "http://127.0.0.1:9222"
     store.delete(session.session_id)
     assert store.get(session.session_id) is None
+
+
+def test_session_store_gets_named_session(tmp_path: Path) -> None:
+    store = SessionStore(tmp_path)
+    session = BrowserSession(
+        name="report-export",
+        provider="cdp",
+        cdp_url="http://127.0.0.1:9222",
+        provider_config=ProviderConfig(provider="cdp", cdp_url="http://127.0.0.1:9222"),
+    )
+    store.save(session)
+
+    loaded = store.get("report-export")
+
+    assert loaded is not None
+    assert loaded.session_id == session.session_id
+
+
+def test_browser_store_roundtrip(tmp_path: Path) -> None:
+    store = BrowserStore(tmp_path)
+    browser = BrowserIdentity(
+        type="ads",
+        name="amazon-us-01",
+        desc="VPS AdsPower profile",
+        provider_config=ProviderConfig(
+            provider="adspower-cdp",
+            ads_base_url="http://127.0.0.1:50325",
+            ads_user_id="profile-1",
+        ),
+    )
+    store.save(browser)
+
+    assert store.get(browser.browser_id) is not None
+    assert store.get("amazon-us-01") is not None
+    assert store.get("amazon-us-01").type == "ads"  # type: ignore[union-attr]
+
+
+def test_public_ads_browser_maps_to_adspower_provider() -> None:
+    browser = BrowserIdentity(
+        type="ads",
+        name="amazon-us-01",
+        provider_config=ProviderConfig(
+            provider="adspower-cdp",
+            ads_base_url="http://127.0.0.1:50325",
+            ads_user_id="profile-1",
+        ),
+    )
+
+    config = provider_config_for_browser(browser, start_url="https://example.test")
+
+    assert config.provider == "adspower-cdp"
+    assert config.start_url == "https://example.test"
+
+
+def test_chrome_direct_browser_requires_open_confirmation() -> None:
+    browser = BrowserIdentity(
+        type="chrome-direct",
+        name="local",
+        confirm_before_use=True,
+        provider_config=ProviderConfig(provider="chrome-direct"),
+    )
+
+    with pytest.raises(ProviderError, match="confirmation"):
+        provider_config_for_browser(browser)
+
+    config = provider_config_for_browser(browser, confirm=True)
+    assert config.provider == "chrome-direct"
+    assert config.confirm_direct is True
+
+
+def test_get_skills_core_exposes_public_browser_types_only() -> None:
+    result = runner.invoke(app, ["get-skills", "core"])
+
+    assert result.exit_code == 0
+    assert "chrome-direct" in result.stdout
+    assert "ads" in result.stdout
+    assert "local-chrome" not in result.stdout
+    assert "generic cdp" not in result.stdout.lower()
+
+
+def test_cli_browser_create_and_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.chdir(tmp_path)
+    create = runner.invoke(
+        app,
+        [
+            "browser",
+            "create",
+            "--type",
+            "ads",
+            "--name",
+            "amazon-us-01",
+            "--desc",
+            "VPS AdsPower profile",
+            "--ads-base-url",
+            "http://127.0.0.1:50325",
+            "--ads-user-id",
+            "profile-1",
+        ],
+    )
+    listed = runner.invoke(app, ["browser", "list"])
+
+    assert create.exit_code == 0
+    assert listed.exit_code == 0
+    assert "amazon-us-01" in listed.stdout
+    assert '"type": "ads"' in listed.stdout
 
 
 def test_redaction() -> None:

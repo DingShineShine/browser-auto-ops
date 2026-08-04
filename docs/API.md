@@ -3,32 +3,36 @@
 ## CLI
 
 ```bash
-bao session start --provider adspower-cdp --ads-base-url http://host:50325 --ads-user-id profile-id
-bao session start --provider local-chrome --user-data-dir E:\tmp\bao-profile --headful
-bao session start --provider chrome-direct --confirm-direct --remote-debugging-port 9222
-bao session start --provider cdp --cdp-url http://127.0.0.1:9222
+bao browser list
+bao browser create --type chrome-direct --name local --desc "Employee current Chrome" --confirm-before-use
+bao browser create --type ads --name amazon-us-01 --desc "VPS AdsPower profile" --ads-base-url http://host:50325 --ads-user-id profile-id
+bao --session work browser open amazon-us-01 https://example.com
 bao session list
-bao session stop s_xxx
+bao session close work
 
-bao navigate s_xxx https://example.com
-bao state s_xxx
-bao click s_xxx 3
-bao hover s_xxx 3
-bao input s_xxx 1 "keyword"
-bao select s_xxx 5 "United States"
-bao scroll s_xxx down --amount 1000
-bao keys s_xxx Enter
-bao upload s_xxx 7 D:\file.xlsx
-bao eval s_xxx "document.title"
-bao screenshot s_xxx --output page.png
-bao wait s_xxx stable
+bao --session work navigate https://example.com
+bao --session work state
+bao --session work click 3
+bao --session work hover 3
+bao --session work input 1 "keyword"
+bao --session work select 5 "United States"
+bao --session work scroll down --amount 1000
+bao --session work keys Enter
+bao --session work upload 7 D:\file.xlsx
+bao --session work eval "document.title"
+bao --session work screenshot page.png
+bao --session work wait stable
+bao --session work get title
+bao --session work get html
+bao --session work get markdown
 
-bao observe s_xxx "find the search box"
-bao act s_xxx "search bluetooth speaker"
-bao extract s_xxx "extract the current table"
+bao --session work observe "find the search box"
+bao --session work act "search bluetooth speaker"
+bao --session work extract "extract the current table"
 
-bao network requests s_xxx --type xhr,fetch --filter /api/
-bao network request s_xxx r_xxx
+bao --session work network requests --type xhr,fetch --filter /api/
+bao --session work network request r_xxx
+bao --session work network clear
 
 bao forge explore s_xxx --goal "extract order list"
 bao forge generate --trace .bao/trace/s_xxx --name tt-orders
@@ -38,13 +42,17 @@ bao forge test .bao/skills/tt-orders
 Dangerous operations require explicit confirmation:
 
 ```bash
-bao click s_xxx 8 --confirm
-bao act s_xxx "delete order" --confirm
-bao eval s_xxx "fetch('/api/delete')" --confirm
+bao --session work click 8 --confirm
+bao --session work act "delete order" --confirm
+bao --session work eval "fetch('/api/delete')" --confirm
 ```
 
 ## HTTP
 
+- `GET /browsers`
+- `POST /browsers`
+- `DELETE /browsers/{id_or_name}`
+- `POST /browsers/{id_or_name}/open`
 - `POST /sessions`
 - `GET /sessions/{id}`
 - `DELETE /sessions/{id}`

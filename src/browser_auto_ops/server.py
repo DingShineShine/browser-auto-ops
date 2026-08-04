@@ -5,15 +5,57 @@ from typing import Any
 
 from fastapi import FastAPI, HTTPException
 
+from browser_auto_ops.browsers import BrowserStore, provider_config_for_browser
 from browser_auto_ops.config import ensure_data_dirs
 from browser_auto_ops.forge import ForgeEngine
 from browser_auto_ops.intelligence import ActService, ExtractService, ObserveService
 from browser_auto_ops.safety import is_dangerous_text
-from browser_auto_ops.schemas import ActionRequest, BrowserSession, ProviderConfig
+from browser_auto_ops.schemas import ActionRequest, BrowserIdentity, BrowserSession, ProviderConfig
 from browser_auto_ops.sessions import SessionManager
 
 app = FastAPI(title="browser-auto-ops", version="0.1.0")
 manager = SessionManager()
+browser_store = BrowserStore()
+
+
+@app.get("/browsers")
+async def list_browsers() -> list[dict[str, Any]]:
+    return [browser.model_dump(mode="json") for browser in browser_store.list()]
+
+
+@app.post("/browsers", response_model=BrowserIdentity)
+async def create_browser(browser: BrowserIdentity) -> BrowserIdentity:
+    if browser.type not in {"chrome-direct", "ads"}:
+        raise HTTPException(status_code=400, detail="browser type must be chrome-direct or ads")
+    browser_store.save(browser)
+    return browser
+
+
+@app.delete("/browsers/{browser_id_or_name}")
+async def delete_browser(browser_id_or_name: str) -> dict[str, Any]:
+    deleted = browser_store.delete(browser_id_or_name)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="browser not found")
+    return deleted.model_dump(mode="json")
+
+
+@app.post("/browsers/{browser_id_or_name}/open", response_model=BrowserSession)
+async def open_browser(browser_id_or_name: str, payload: dict[str, Any]) -> BrowserSession:
+    browser = browser_store.get(browser_id_or_name)
+    if not browser:
+        raise HTTPException(status_code=404, detail="browser not found")
+    try:
+        config = provider_config_for_browser(
+            browser,
+            start_url=payload.get("url"),
+            confirm=bool(payload.get("confirm")),
+        )
+        session = await manager.start(config)
+        session.name = str(payload.get("session") or payload.get("session_name") or "")
+        session.browser_id = browser.browser_id
+        return session
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.post("/sessions", response_model=BrowserSession)

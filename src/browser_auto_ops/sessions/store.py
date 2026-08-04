@@ -16,7 +16,13 @@ class SessionStore:
         return list(self._read().values())
 
     def get(self, session_id: str) -> BrowserSession | None:
-        return self._read().get(session_id)
+        sessions = self._read()
+        if session_id in sessions:
+            return sessions[session_id]
+        for session in sessions.values():
+            if session.name == session_id:
+                return session
+        return None
 
     def save(self, session: BrowserSession) -> None:
         sessions = self._read()

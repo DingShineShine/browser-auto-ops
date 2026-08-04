@@ -147,6 +147,10 @@ class SessionManager:
         managed = self._managed(session_id)
         return managed.network.get(request_id)
 
+    def network_clear(self, session_id: str) -> int:
+        managed = self._managed(session_id)
+        return managed.network.clear()
+
     async def _register(self, session: BrowserSession, connection: BrowserConnection) -> None:
         trace = TraceRecorder(self.data_root, session.session_id)
         network = NetworkRecorder(connection.page)

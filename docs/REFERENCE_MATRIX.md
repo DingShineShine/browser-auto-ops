@@ -9,6 +9,7 @@ This project does not copy large source blocks from referenced projects. Each ro
 | `chrome-direct` provider | BrowserAct `chrome-direct` local mode and installed package docs/introspection | Use `DevToolsActivePort`, raw CDP, default-profile remote debugging flag, and auto-allow watcher | `browser_auto_ops.providers.chrome_direct.ChromeDirectProvider` / `providers.raw_cdp` |
 | `cdp` provider | Playwright `connect_over_cdp`, Chrome DevTools Protocol | Treat CDP URL as the universal browser handle | `browser_auto_ops.providers.cdp.GenericCdpProvider` |
 | Browser provider abstraction | Steel Browser, Skyvern browser engine | Separate browser lifecycle from automation logic | `browser_auto_ops.providers.base.BrowserProvider` |
+| Browser identity UX | BrowserAct browser/session model | Agents choose a named browser identity before opening a named session | `browser_auto_ops.schemas.BrowserIdentity` / `browser_auto_ops.browsers.BrowserStore` |
 | State/index | BrowserAct, Browser Use DOM service | Convert page into indexed interactive element list | `browser_auto_ops.snapshot.scanner.SnapshotEngine` |
 | Interactive detector | Browser Use `DomService` | Use tag, role, ARIA, text, visibility, rect, scrollability | `DOM_SCANNER` in `snapshot/scanner.py` |
 | Action execution | BrowserAct, Stagehand, Playwright | Real browser events first, JS fallback second | `browser_auto_ops.actions.executor.ActionExecutor` |
@@ -17,6 +18,11 @@ This project does not copy large source blocks from referenced projects. Each ro
 | Network capture | BrowserAct network commands, CDP `Network.*` | Track XHR/fetch and response bodies | `browser_auto_ops.network.recorder.NetworkRecorder` |
 | Trace | Skyvern workflow/debug trace | JSONL events plus states/screenshots/network evidence | `browser_auto_ops.trace.recorder.TraceRecorder` |
 | Skill Forge | BrowserAct Skill Forge docs | Explore trace, generate `SKILL.md` and JS-emitting Python wrapper | `browser_auto_ops.forge.engine.ForgeEngine` |
+
+Public API note:
+
+- Employee-facing browser types are `chrome-direct` and `ads`.
+- `local-chrome`, generic `cdp`, and `adspower-cdp` are retained as internal implementation details unless explicitly needed for development diagnostics.
 
 Useful source links:
 
