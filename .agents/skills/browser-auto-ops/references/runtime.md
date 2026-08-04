@@ -16,9 +16,11 @@ Do not expose `local-chrome`, generic `cdp`, or `adspower-cdp` as employee-facin
 ## Core Workflow
 
 ```bash
+bao daemon start
 bao browser list
 bao browser create --type chrome-direct --name local --desc "Employee current Chrome" --confirm-before-use
 bao browser create --type ads --name amazon-us-01 --desc "VPS AdsPower profile" --ads-base-url http://HOST:PORT --ads-user-id PROFILE_ID
+bao chrome-direct authorize
 bao --session task-name browser open <browser_id_or_name> https://example.com --confirm
 bao --session task-name state
 bao --session task-name click 3
@@ -26,7 +28,11 @@ bao --session task-name input 1 "keyword"
 bao --session task-name wait stable
 bao --session task-name get title
 bao --session task-name get markdown
+bao --session task-name tab list
+bao --session task-name cookies get
+bao --session task-name wait selector 3 --state visible
 bao --session task-name network requests --type xhr,fetch --filter /api/
+bao --session task-name downloads wait latest --output D:\exports
 bao session close task-name
 ```
 
@@ -42,3 +48,13 @@ AdsPower often returns a loopback `ws.puppeteer` URL. In production, run browser
 - Do not auto-submit payment, delete, publish, approve, or account-changing operations.
 - Use `--confirm` only after explicit user approval.
 - Treat cookies, authorization headers, passwords, verification codes, and AdsPower profile identifiers as sensitive.
+
+## Daemon Requirement
+
+Use `bao daemon start` before `chrome-direct` work. Without the daemon, legacy reconnect mode may trigger Chrome's remote-debugging permission dialog on every command.
+
+## Known Boundaries
+
+- `dialog accept/dismiss` currently returns a clear unsupported response unless persistent dialog tracking is added.
+- `network har start/stop` is registered but currently reports that HAR capture is not active; use request/response trace evidence for now.
+- Raw CDP `chrome-direct` has a smaller capability surface than Playwright-backed `ads`.

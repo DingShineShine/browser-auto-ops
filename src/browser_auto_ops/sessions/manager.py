@@ -103,8 +103,10 @@ class SessionManager:
 
     async def state(self, session_id: str) -> PageState:
         managed = self._managed(session_id)
-        await self._sync_session_from_connection(managed)
+        self._sync_session_from_connection(managed)
+        previous = managed.last_state
         state = await self.snapshot.capture(managed.connection.page, session_id)
+        _mark_changed_elements(previous, state)
         managed.last_state = state
         managed.trace.event("state.capture", state)
         managed.trace.save_json("states", f"{_stamp()}.json", state)
@@ -124,6 +126,7 @@ class SessionManager:
         after_state: PageState | None = None
         if request.type not in {"screenshot", "execute_js", "extract"}:
             after_state = await self.state(session_id)
+            _apply_action_verification(before_state, after_state, request, result)
         return result, after_state
 
     async def screenshot(self, session_id: str, output: Path | None = None) -> Path:
@@ -161,7 +164,7 @@ class SessionManager:
             trace=trace,
             network=network,
         )
-        await self._sync_session_from_connection(self.sessions[session.session_id])
+        self._sync_session_from_connection(self.sessions[session.session_id])
 
     async def _reconcile_after_action(self, managed: ManagedSession, before: PageFacts) -> None:
         deadline = asyncio.get_event_loop().time() + 3.0
@@ -179,7 +182,7 @@ class SessionManager:
         if switched:
             managed.network = NetworkRecorder(managed.connection.page)
             await managed.network.enable()
-        await self._sync_session_from_connection(managed)
+        self._sync_session_from_connection(managed)
 
     async def _adopt_new_page_if_needed(self, managed: ManagedSession, before: PageFacts) -> bool:
         connection = managed.connection
@@ -227,7 +230,7 @@ class SessionManager:
             page_ids=page_ids,
         )
 
-    async def _sync_session_from_connection(self, managed: ManagedSession) -> None:
+    def _sync_session_from_connection(self, managed: ManagedSession) -> None:
         target_id = _page_target_id(managed.connection.page)
         if target_id:
             managed.connection.meta["target_id"] = target_id
@@ -243,7 +246,7 @@ class SessionManager:
             raise SessionNotFoundError(session_id) from exc
 
     async def close_all(self) -> None:
-        for session_id in list(self.sessions):
+        for session_id in self.sessions.copy():
             try:
                 await self.stop(session_id)
             except Exception:
@@ -300,3 +303,60 @@ def _verification_payload(before: PageFacts, after: PageFacts) -> dict[str, Any]
         "target_changed": before.target_id != after.target_id,
         "page_count_changed": len(before.page_ids or []) != len(after.page_ids or []),
     }
+
+
+def _mark_changed_elements(previous: PageState | None, current: PageState) -> None:
+    if not previous:
+        return
+    previous_keys = {_element_signature(element) for element in previous.elements}
+    for element in current.elements:
+        element.changed = _element_signature(element) not in previous_keys
+
+
+def _element_signature(element) -> tuple[str, str, str, str]:
+    return (
+        element.kind,
+        element.locator.value,
+        element.name or element.text or element.placeholder or element.value,
+        element.frame_url or "",
+    )
+
+
+def _apply_action_verification(
+    before: PageState,
+    after: PageState,
+    request: ActionRequest,
+    result: ActionResult,
+) -> None:
+    if request.type != "click" or request.index is None or not result.success:
+        return
+    before_element = next((element for element in before.elements if element.index == request.index), None)
+    if not before_element:
+        return
+    label = " ".join(
+        [
+            before_element.kind,
+            before_element.role or "",
+            before_element.name,
+            before_element.text,
+            " ".join(before_element.attributes.values()),
+        ]
+    )
+    if before_element.kind == "checkbox" or before_element.checked is not None:
+        after_match = _find_matching_after_element(before_element, after)
+        if after_match and after_match.checked == before_element.checked:
+            result.success = False
+            result.message = "click did not change checkbox state"
+    if before_element.modal or any(word in label for word in ["确认选择", "前往查看", "确定"]):
+        if any(element.modal for element in after.elements) and any(element.modal for element in before.elements):
+            result.success = False
+            result.message = "modal is still open after click"
+
+
+def _find_matching_after_element(before: Any, after: PageState):
+    for element in after.elements:
+        if element.locator.value == before.locator.value:
+            return element
+        if before.action_locator and element.action_locator and element.action_locator.value == before.action_locator.value:
+            return element
+    return None

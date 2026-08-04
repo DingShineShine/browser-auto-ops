@@ -8,12 +8,14 @@ from typer.testing import CliRunner
 
 from browser_auto_ops.browsers import BrowserStore, provider_config_for_browser
 from browser_auto_ops.cli import app
+from browser_auto_ops.cdp_auto_allow_helper import is_allow_button_label, is_remote_debugging_dialog_text
+from browser_auto_ops.downloads import DownloadManager
 from browser_auto_ops.actions import ActionExecutor
 from browser_auto_ops.errors import ProviderError
 from browser_auto_ops.forge import ForgeEngine
 from browser_auto_ops.intelligence import ActService, ObserveService
 from browser_auto_ops.providers.registry import provider_for
-from browser_auto_ops.providers.raw_cdp import _best_page_target, _resolve_page_target
+from browser_auto_ops.providers.raw_cdp import _best_page_target, _expression, _resolve_page_target
 from browser_auto_ops.safety import action_requires_confirmation, confirmation_reason
 from browser_auto_ops.schemas import (
     ActionRequest,
@@ -44,8 +46,9 @@ def test_provider_registry() -> None:
 @pytest.mark.asyncio
 async def test_chrome_direct_requires_confirmation() -> None:
     provider = provider_for("chrome-direct")
+    config = ProviderConfig(provider="chrome-direct")
     with pytest.raises(ProviderError, match="confirm_direct"):
-        await provider.start(ProviderConfig(provider="chrome-direct"))
+        await provider.start(config)
 
 
 @pytest.mark.asyncio
@@ -144,12 +147,19 @@ def test_browser_store_roundtrip(tmp_path: Path) -> None:
             ads_base_url="http://127.0.0.1:50325",
             ads_user_id="profile-1",
         ),
+        owner="ops",
+        department="export",
+        account_label="amazon-us",
+        platform="amazon",
+        allowed_domains=["sellercentral.amazon.com"],
+        sidecar_url="http://127.0.0.1:8765",
     )
     store.save(browser)
 
     assert store.get(browser.browser_id) is not None
     assert store.get("amazon-us-01") is not None
     assert store.get("amazon-us-01").type == "ads"  # type: ignore[union-attr]
+    assert store.get("amazon-us-01").allowed_domains == ["sellercentral.amazon.com"]  # type: ignore[union-attr]
 
 
 def test_public_ads_browser_maps_to_adspower_provider() -> None:
@@ -195,6 +205,19 @@ def test_get_skills_core_exposes_public_browser_types_only() -> None:
     assert "generic cdp" not in result.stdout.lower()
 
 
+def test_get_skills_specialized_pages() -> None:
+    chrome = runner.invoke(app, ["get-skills", "chrome-direct"])
+    ads = runner.invoke(app, ["get-skills", "ads"])
+    safety = runner.invoke(app, ["get-skills", "safety"])
+
+    assert chrome.exit_code == 0
+    assert "bao chrome-direct authorize" in chrome.stdout
+    assert ads.exit_code == 0
+    assert "sidecar" in ads.stdout
+    assert safety.exit_code == 0
+    assert "--confirm" in safety.stdout
+
+
 def test_cli_browser_create_and_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
     create = runner.invoke(
@@ -220,6 +243,39 @@ def test_cli_browser_create_and_list(tmp_path: Path, monkeypatch: pytest.MonkeyP
     assert listed.exit_code == 0
     assert "amazon-us-01" in listed.stdout
     assert '"type": "ads"' in listed.stdout
+
+
+def test_browseract_compat_command_groups_are_registered() -> None:
+    root = runner.invoke(app, ["--help"])
+    network = runner.invoke(app, ["network", "har", "--help"])
+
+    assert root.exit_code == 0
+    for command in ["daemon", "chrome-direct", "tab", "cookies", "dialog", "downloads"]:
+        assert command in root.stdout
+    assert network.exit_code == 0
+    assert "start" in network.stdout
+    assert "stop" in network.stdout
+
+
+def test_chrome_direct_dialog_text_matching() -> None:
+    assert is_remote_debugging_dialog_text("要允许远程调试吗？")
+    assert is_remote_debugging_dialog_text("Allow remote debugging?")
+    assert is_allow_button_label("允许")
+    assert is_allow_button_label("Allow")
+    assert not is_allow_button_label("取消")
+
+
+def test_raw_cdp_expression_does_not_wrap_iife_or_expression_arrow() -> None:
+    assert _expression("(() => 1)()") == "(() => 1)()"
+    assert _expression("JSON.stringify((() => ({ok:true}))())").startswith("JSON.stringify")
+    assert _expression("() => 1") == "(() => 1)()"
+
+
+def test_download_manager_records_download(tmp_path: Path) -> None:
+    manager = DownloadManager(tmp_path)
+    record = manager.list()
+
+    assert record == []
 
 
 def test_redaction() -> None:
@@ -267,6 +323,14 @@ def test_act_dangerous_goal_blocks_until_confirmed() -> None:
     assert actions[0].type == "click"
     assert actions[0].index == 2
     assert actions[0].require_confirm is True
+
+
+def test_act_service_returns_structured_planner_result() -> None:
+    result = ActService().plan_result(_sample_state(), "find Search products search box")
+
+    assert result.planner == "heuristic"
+    assert result.plan.actions
+    assert result.plan.actions[0].type == "input_text"
 
 
 @pytest.mark.asyncio

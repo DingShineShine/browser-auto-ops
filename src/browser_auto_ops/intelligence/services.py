@@ -4,7 +4,7 @@ import re
 from typing import Any
 
 from browser_auto_ops.safety import is_dangerous_text
-from browser_auto_ops.schemas import ActionRequest, ObserveCandidate, PageState
+from browser_auto_ops.schemas import ActionPlan, ActionRequest, ObserveCandidate, PageState, PlannedAction, PlannerResult
 
 
 class ObserveService:
@@ -42,6 +42,41 @@ class ObserveService:
 
 
 class ActService:
+    def plan_result(
+        self,
+        state: PageState,
+        goal: str,
+        *,
+        allow_dangerous: bool = False,
+        require_confirm: bool = False,
+    ) -> PlannerResult:
+        actions = self.plan(
+            state,
+            goal,
+            allow_dangerous=allow_dangerous,
+            require_confirm=require_confirm,
+        )
+        planned = [
+            PlannedAction(
+                type=action.type,
+                index=action.index,
+                text=action.text,
+                option=action.option,
+                require_confirm=action.require_confirm,
+                reason="heuristic state match",
+            )
+            for action in actions
+        ]
+        warnings = []
+        if not planned:
+            warnings.append("no action candidates matched the current state")
+        return PlannerResult(
+            goal=goal,
+            planner="heuristic",
+            plan=ActionPlan(goal=goal, reason="fallback heuristic planner", actions=planned),
+            warnings=warnings,
+        )
+
     def plan(
         self,
         state: PageState,

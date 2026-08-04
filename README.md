@@ -23,11 +23,16 @@ bao get-skills core
 Core employee workflow:
 
 ```bash
+bao daemon start
 bao browser create --type chrome-direct --name local --desc "Employee current Chrome" --confirm-before-use
 bao browser create --type ads --name amazon-us-01 --desc "VPS AdsPower profile" --ads-base-url http://HOST:PORT --ads-user-id PROFILE_ID
+bao chrome-direct authorize
 bao --session report browser open amazon-us-01 https://example.com
 bao --session report state
 bao --session report click 3
+bao --session report tab list
+bao --session report cookies get
+bao --session report downloads wait latest --output D:\exports
 bao session close report
 ```
 

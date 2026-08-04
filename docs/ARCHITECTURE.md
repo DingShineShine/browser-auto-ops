@@ -2,6 +2,7 @@
 
 ```text
 CLI / FastAPI
+  -> Local daemon mode
   -> BrowserStore
     -> public browser types: chrome-direct, ads
   -> SessionManager
@@ -12,7 +13,9 @@ CLI / FastAPI
     -> SnapshotEngine
     -> ActionExecutor
     -> ObserveService / ActService / ExtractService
+    -> PlannerResult / ActionPlan schema
     -> NetworkRecorder
+    -> DownloadManager
     -> TraceRecorder
     -> ForgeEngine
 ```
@@ -29,11 +32,12 @@ class BrowserProvider(Protocol):
 ## Runtime Model
 
 - `BrowserIdentity`: employee-facing browser identity with `name`, `desc`, `type`, and provider config.
+- `ActionPlan`: structured planner output used by `act`; the current planner is heuristic, with room for an OpenAI-compatible planner later.
 - `BrowserSession`: serializable metadata, also stored by CLI in `.bao/sessions.json`.
 - `BrowserConnection`: live Playwright browser/page/context handle.
 - `ManagedSession`: runtime tuple of metadata, connection, trace, network recorder, and last state.
 
-CLI commands reconnect to stored CDP URLs per invocation. FastAPI keeps live sessions in memory.
+CLI commands should prefer the local daemon for live sessions. Legacy reconnect mode remains as a diagnostic fallback, but `chrome-direct` should use daemon-backed sessions to avoid repeated Chrome remote-debugging authorization prompts.
 
 Public browser types are intentionally narrower than internal providers:
 

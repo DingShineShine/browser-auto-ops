@@ -3,9 +3,14 @@
 ## CLI
 
 ```bash
+bao daemon start
+bao daemon status
+bao daemon stop
+
 bao browser list
 bao browser create --type chrome-direct --name local --desc "Employee current Chrome" --confirm-before-use
 bao browser create --type ads --name amazon-us-01 --desc "VPS AdsPower profile" --ads-base-url http://host:50325 --ads-user-id profile-id
+bao chrome-direct authorize
 bao --session work browser open amazon-us-01 https://example.com
 bao session list
 bao session close work
@@ -25,6 +30,12 @@ bao --session work wait stable
 bao --session work get title
 bao --session work get html
 bao --session work get markdown
+bao --session work tab list
+bao --session work tab switch 0
+bao --session work cookies get
+bao --session work cookies export cookies.json
+bao --session work dialog status
+bao --session work wait selector 3 --state visible
 
 bao --session work observe "find the search box"
 bao --session work act "search bluetooth speaker"
@@ -33,6 +44,10 @@ bao --session work extract "extract the current table"
 bao --session work network requests --type xhr,fetch --filter /api/
 bao --session work network request r_xxx
 bao --session work network clear
+bao --session work network har start
+bao --session work network har stop trace.har
+bao --session work downloads list
+bao --session work downloads wait latest --timeout 300000 --output D:\exports
 
 bao forge explore s_xxx --goal "extract order list"
 bao forge generate --trace .bao/trace/s_xxx --name tt-orders
@@ -63,6 +78,8 @@ bao --session work eval "fetch('/api/delete')" --confirm
 - `POST /sessions/{id}/extract`
 - `GET /sessions/{id}/network/requests`
 - `GET /sessions/{id}/network/requests/{request_id}`
+- `GET /sessions/{id}/downloads`
+- `POST /sessions/{id}/downloads/wait`
 - `POST /forge/jobs`
 
 Confirmed action request:

@@ -57,6 +57,13 @@ class BrowserIdentity(BaseModel):
     desc: str = ""
     confirm_before_use: bool = False
     provider_config: ProviderConfig
+    owner: str | None = None
+    department: str | None = None
+    account_label: str | None = None
+    platform: str | None = None
+    allowed_domains: list[str] = Field(default_factory=list)
+    audit_enabled: bool = True
+    sidecar_url: str | None = None
     created_at: datetime = Field(default_factory=utc_now)
     updated_at: datetime = Field(default_factory=utc_now)
     meta: dict[str, Any] = Field(default_factory=dict)
@@ -101,6 +108,8 @@ class StateElement(BaseModel):
     placeholder: str = ""
     value: str = ""
     locator: ElementLocator
+    action_locator: ElementLocator | None = None
+    selector_candidates: list[ElementLocator] = Field(default_factory=list)
     rect: ElementRect | None = None
     frame_index: int = 0
     frame_url: str | None = None
@@ -110,6 +119,12 @@ class StateElement(BaseModel):
     fillable: bool = False
     selectable: bool = False
     scrollable: bool = False
+    checked: bool | None = None
+    selected: bool | None = None
+    expanded: bool | None = None
+    modal: bool = False
+    occluded: bool = False
+    changed: bool = False
     attributes: dict[str, str] = Field(default_factory=dict)
 
 
@@ -124,12 +139,29 @@ class PageState(BaseModel):
     def render_text(self) -> str:
         lines: list[str] = []
         for element in self.elements:
-            label = element.name or element.text or element.placeholder or element.value
-            label = label.replace("\n", " ").strip()
-            if len(label) > 100:
-                label = label[:97] + "..."
-            lines.append(f'[{element.index}] {element.kind} "{label}"')
+            label = _render_label(element)
+            marker = "*" if element.changed else ""
+            suffix = _render_flags(element)
+            role = f" role={element.role}" if element.role else ""
+            lines.append(f'{marker}[{element.index}] @e{element.index} {element.kind}{role} "{label}"{suffix}')
         return "\n".join(lines)
+
+
+def _render_label(element: StateElement) -> str:
+    label = element.name or element.text or element.placeholder or element.value
+    label = label.replace("\n", " ").strip()
+    return label[:97] + "..." if len(label) > 100 else label
+
+
+def _render_flags(element: StateElement) -> str:
+    flags = []
+    for name in ("checked", "selected", "expanded"):
+        value = getattr(element, name)
+        if value is not None:
+            flags.append(f"{name}={str(value).lower()}")
+    if element.modal:
+        flags.append("modal=true")
+    return f" {' '.join(flags)}" if flags else ""
 
 
 class ActionRequest(BaseModel):
@@ -166,6 +198,28 @@ class ObserveCandidate(BaseModel):
     reason: str
 
 
+class PlannedAction(BaseModel):
+    type: ActionType
+    index: int | None = None
+    text: str | None = None
+    option: str | None = None
+    reason: str = ""
+    require_confirm: bool = False
+
+
+class ActionPlan(BaseModel):
+    goal: str
+    reason: str = ""
+    actions: list[PlannedAction] = Field(default_factory=list)
+
+
+class PlannerResult(BaseModel):
+    goal: str
+    planner: Literal["heuristic", "llm"] = "heuristic"
+    plan: ActionPlan
+    warnings: list[str] = Field(default_factory=list)
+
+
 class NetworkRequestInfo(BaseModel):
     request_id: str = Field(default_factory=lambda: f"r_{uuid4().hex[:10]}")
     url: str
@@ -176,6 +230,19 @@ class NetworkRequestInfo(BaseModel):
     response_headers: dict[str, str] = Field(default_factory=dict)
     post_data: str | None = None
     response_body: str | None = None
+    error: str | None = None
+    started_at: datetime = Field(default_factory=utc_now)
+    finished_at: datetime | None = None
+
+
+class DownloadRecord(BaseModel):
+    download_id: str = Field(default_factory=lambda: f"d_{uuid4().hex[:10]}")
+    session_id: str
+    browser_id: str | None = None
+    source_url: str
+    suggested_filename: str | None = None
+    final_path: str | None = None
+    status: Literal["pending", "running", "completed", "failed"] = "pending"
     error: str | None = None
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: datetime | None = None

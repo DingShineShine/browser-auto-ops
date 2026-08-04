@@ -438,7 +438,9 @@ def _expression(script: str, arg: Any = None) -> str:
     stripped = script.strip()
     if arg is not None:
         return f"({stripped})({json.dumps(arg, ensure_ascii=False)})"
-    if stripped.startswith("async ") or stripped.startswith("()") or "=>" in stripped[:80]:
+    if stripped.startswith("((") or stripped.endswith(")()"):
+        return stripped
+    if stripped.startswith("async ") or stripped.startswith("()") or (stripped.startswith("(") and "=>" in stripped[:80]):
         return f"({stripped})()"
     return stripped
 

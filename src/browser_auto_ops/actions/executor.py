@@ -7,7 +7,7 @@ from playwright.async_api import Page
 
 from browser_auto_ops.errors import ElementNotFoundError, UnsafeActionError
 from browser_auto_ops.safety import confirmation_reason
-from browser_auto_ops.schemas import ActionRequest, ActionResult, PageState, StateElement
+from browser_auto_ops.schemas import ActionRequest, ActionResult, ElementRect, PageState, StateElement
 
 
 class ActionExecutor:
@@ -18,63 +18,80 @@ class ActionExecutor:
             reason = confirmation_reason(request, element)
             if reason and not request.require_confirm:
                 raise UnsafeActionError(reason)
-
-            if request.type == "click":
-                element = _element(state, request.index)
-                return await self._click(page, element)
-            if request.type == "input_text":
-                element = _element(state, request.index)
-                return await self._input(page, element, request.text or "")
-            if request.type == "select_option":
-                element = _element(state, request.index)
-                return await self._select(page, element, request.option or request.text or "")
-            if request.type == "hover":
-                element = _element(state, request.index)
-                return await self._hover(page, element)
-            if request.type == "scroll":
-                return await self._scroll(page, request.direction or "down", request.amount or 500)
-            if request.type == "keypress":
-                await page.keyboard.press(request.key or request.text or "Enter")
-                return ActionResult(type=request.type, success=True, message="key pressed")
-            if request.type == "upload_file":
-                element = _element(state, request.index)
-                return await self._upload(page, element, request.file_path)
-            if request.type == "execute_js":
-                data = await page.evaluate(request.script or "undefined")
-                return ActionResult(type=request.type, success=True, data=data)
-            if request.type == "screenshot":
-                path = request.output or Path("page.png")
-                await page.screenshot(path=str(path), full_page=True)
-                return ActionResult(type=request.type, success=True, data=str(path))
-            if request.type == "goto_url":
-                await page.goto(request.url or "", wait_until="domcontentloaded")
-                return ActionResult(type=request.type, success=True, message=page.url)
-            if request.type == "go_back":
-                await page.go_back(wait_until="domcontentloaded")
-                return ActionResult(type=request.type, success=True)
-            if request.type == "go_forward":
-                await page.go_forward(wait_until="domcontentloaded")
-                return ActionResult(type=request.type, success=True)
-            if request.type == "reload":
-                await page.reload(wait_until="domcontentloaded")
-                return ActionResult(type=request.type, success=True)
-            if request.type == "wait":
-                await wait_stable(page)
-                return ActionResult(type=request.type, success=True, message="stable")
-            raise ValueError(f"unsupported action type: {request.type}")
+            return await self._dispatch(page, state, request)
         except Exception as exc:
             return ActionResult(type=started_type, success=False, message=str(exc))
 
+    async def _dispatch(self, page: Page, state: PageState, request: ActionRequest) -> ActionResult:
+        handlers = {
+            "click": lambda: self._click(page, _element(state, request.index)),
+            "input_text": lambda: self._input(page, _element(state, request.index), request.text or ""),
+            "select_option": lambda: self._select(
+                page,
+                _element(state, request.index),
+                request.option or request.text or "",
+            ),
+            "hover": lambda: self._hover(page, _element(state, request.index)),
+            "scroll": lambda: self._scroll(page, request.direction or "down", request.amount or 500),
+            "keypress": lambda: self._keypress(page, request),
+            "upload_file": lambda: self._upload(page, _element(state, request.index), request.file_path),
+            "execute_js": lambda: self._execute_js(page, request),
+            "screenshot": lambda: self._screenshot(page, request),
+            "goto_url": lambda: self._goto_url(page, request),
+            "go_back": lambda: self._go_back(page, request),
+            "go_forward": lambda: self._go_forward(page, request),
+            "reload": lambda: self._reload(page, request),
+            "wait": lambda: self._wait(page, request),
+        }
+        handler = handlers.get(request.type)
+        if not handler:
+            raise ValueError(f"unsupported action type: {request.type}")
+        return await handler()
+
+    async def _keypress(self, page: Page, request: ActionRequest) -> ActionResult:
+        await page.keyboard.press(request.key or request.text or "Enter")
+        return ActionResult(type=request.type, success=True, message="key pressed")
+
+    async def _execute_js(self, page: Page, request: ActionRequest) -> ActionResult:
+        data = await page.evaluate(request.script or "undefined")
+        return ActionResult(type=request.type, success=True, data=data)
+
+    async def _screenshot(self, page: Page, request: ActionRequest) -> ActionResult:
+        path = request.output or Path("page.png")
+        await page.screenshot(path=str(path), full_page=True)
+        return ActionResult(type=request.type, success=True, data=str(path))
+
+    async def _goto_url(self, page: Page, request: ActionRequest) -> ActionResult:
+        await page.goto(request.url or "", wait_until="domcontentloaded")
+        return ActionResult(type=request.type, success=True, message=page.url)
+
+    async def _go_back(self, page: Page, request: ActionRequest) -> ActionResult:
+        await page.go_back(wait_until="domcontentloaded")
+        return ActionResult(type=request.type, success=True)
+
+    async def _go_forward(self, page: Page, request: ActionRequest) -> ActionResult:
+        await page.go_forward(wait_until="domcontentloaded")
+        return ActionResult(type=request.type, success=True)
+
+    async def _reload(self, page: Page, request: ActionRequest) -> ActionResult:
+        await page.reload(wait_until="domcontentloaded")
+        return ActionResult(type=request.type, success=True)
+
+    async def _wait(self, page: Page, request: ActionRequest) -> ActionResult:
+        await wait_stable(page)
+        return ActionResult(type=request.type, success=True, message="stable")
+
     async def _click(self, page: Page, element: StateElement) -> ActionResult:
-        if element.rect and element.frame_index == 0:
-            x = element.rect.x + element.rect.width / 2
-            y = element.rect.y + element.rect.height / 2
+        fresh_rect = await _fresh_action_rect(page, element)
+        if fresh_rect and element.frame_index == 0:
+            x = fresh_rect.x + fresh_rect.width / 2
+            y = fresh_rect.y + fresh_rect.height / 2
             try:
                 await page.mouse.move(x, y)
                 await page.mouse.down()
                 await page.mouse.up()
                 await wait_stable(page)
-                return ActionResult(type="click", success=True, message="clicked with mouse")
+                return ActionResult(type="click", success=True, message="clicked action target with mouse")
             except Exception:
                 pass
         await _js_click(page, element)
@@ -187,8 +204,41 @@ def _frame(page: Page, frame_index: int):
         raise ElementNotFoundError(f"frame index {frame_index} no longer exists") from exc
 
 
+async def _fresh_action_rect(page: Page, element: StateElement) -> ElementRect | None:
+    locator = element.action_locator or element.locator
+    frame = _frame(page, element.frame_index)
+    try:
+        raw = await frame.evaluate(
+            """
+            ({xpath}) => {
+              const node = document.evaluate(xpath, document, null, XPathResult.FIRST_ORDERED_NODE_TYPE, null).singleNodeValue;
+              if (!node) return null;
+              node.scrollIntoView({block: 'center', inline: 'center'});
+              const rect = node.getBoundingClientRect();
+              const x = rect.left + rect.width / 2;
+              const y = rect.top + rect.height / 2;
+              const top = document.elementFromPoint(x, y);
+              const receives = !!top && (top === node || node.contains(top) || top.contains(node));
+              return {x: rect.x, y: rect.y, width: rect.width, height: rect.height, receives};
+            }
+            """,
+            {"xpath": locator.value},
+        )
+    except Exception:
+        return element.rect
+    if not raw:
+        return element.rect
+    if raw.get("width", 0) <= 0 or raw.get("height", 0) <= 0:
+        return element.rect
+    return ElementRect(
+        x=float(raw.get("x", 0)),
+        y=float(raw.get("y", 0)),
+        width=float(raw.get("width", 0)),
+        height=float(raw.get("height", 0)),
+    )
 async def _js_click(page: Page, element: StateElement) -> None:
     frame = _frame(page, element.frame_index)
+    locator = element.action_locator or element.locator
     await frame.evaluate(
         """
         ({xpath}) => {
@@ -198,7 +248,7 @@ async def _js_click(page: Page, element: StateElement) -> None:
           node.click();
         }
         """,
-        {"xpath": element.locator.value},
+        {"xpath": locator.value},
     )
 
 
