@@ -20,6 +20,38 @@ CLI command:
 bao --help
 ```
 
+## Install For Desktop Agents
+
+This repository is private on the internal GitLab server. A BrowserAct-style
+public `Skill URL` only works when the target agent can authenticate to GitLab.
+If unauthenticated users open the GitLab tree URL, GitLab redirects to sign-in
+or returns 401/404.
+
+Recommended private install flow:
+
+```bash
+git clone ssh://git@git.shinebed.com.cn:2222/datagroup/browser-auto-ops.git
+cd browser-auto-ops
+uv tool install . --python 3.12 --force
+bao --help
+```
+
+Then install the skill from the checked-out directory:
+
+```text
+.agents/skills/browser-auto-ops
+```
+
+If the agent supports authenticated GitLab tree URLs, use:
+
+```text
+https://git.shinebed.com.cn/datagroup/browser-auto-ops/-/tree/main/.agents/skills/browser-auto-ops
+```
+
+For a BrowserAct-like one-line install experience without authentication
+issues, publish `.agents/skills/browser-auto-ops` to a public or internal
+anonymous-readable skills repository.
+
 Run API server:
 
 ```bash
