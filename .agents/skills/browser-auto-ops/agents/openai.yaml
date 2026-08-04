@@ -1,0 +1,4 @@
+interface:
+  display_name: "Browser Auto Ops"
+  short_description: "Control ADS, local Chrome, and CDP browsers with bao."
+  default_prompt: "Use browser-auto-ops to start a browser session, inspect state, run actions, capture network requests, or generate a reusable skill."

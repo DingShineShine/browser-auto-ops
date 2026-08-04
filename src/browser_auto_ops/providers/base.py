@@ -14,10 +14,10 @@ from browser_auto_ops.schemas import BrowserSession, ProviderConfig
 
 @dataclass
 class BrowserConnection:
-    playwright: Playwright
-    browser: Browser
-    context: BrowserContext
-    page: Page
+    playwright: Playwright | None
+    browser: Browser | Any
+    context: BrowserContext | Any
+    page: Page | Any
     cdp_url: str
     process: subprocess.Popen[Any] | None = None
     owns_browser: bool = False
@@ -26,7 +26,10 @@ class BrowserConnection:
     async def close(self) -> None:
         if self.owns_browser:
             await self.browser.close()
-        await self.playwright.stop()
+        elif self.playwright is None and hasattr(self.browser, "close"):
+            await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
         if self.process and self.process.poll() is None:
             self.process.terminate()
             try:
@@ -36,7 +39,10 @@ class BrowserConnection:
 
     async def disconnect(self) -> None:
         """Disconnect automation transport without closing an externally managed browser."""
-        await self.playwright.stop()
+        if self.playwright is None and hasattr(self.browser, "close"):
+            await self.browser.close()
+        if self.playwright:
+            await self.playwright.stop()
 
 
 class BrowserProvider(Protocol):

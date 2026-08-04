@@ -6,12 +6,15 @@ from pathlib import Path
 import pytest
 
 from browser_auto_ops.actions import ActionExecutor
+from browser_auto_ops.errors import ProviderError
 from browser_auto_ops.forge import ForgeEngine
 from browser_auto_ops.intelligence import ActService, ObserveService
 from browser_auto_ops.providers.registry import provider_for
+from browser_auto_ops.providers.raw_cdp import _best_page_target, _resolve_page_target
 from browser_auto_ops.safety import action_requires_confirmation, confirmation_reason
 from browser_auto_ops.schemas import (
     ActionRequest,
+    ActionResult,
     BrowserSession,
     ElementLocator,
     ElementRect,
@@ -27,7 +30,69 @@ from browser_auto_ops.trace.redaction import redact
 def test_provider_registry() -> None:
     assert provider_for("cdp").name == "cdp"
     assert provider_for("local-chrome").name == "local-chrome"
+    assert provider_for("chrome-direct").name == "chrome-direct"
     assert provider_for("adspower-cdp").name == "adspower-cdp"
+
+
+@pytest.mark.asyncio
+async def test_chrome_direct_requires_confirmation() -> None:
+    provider = provider_for("chrome-direct")
+    with pytest.raises(ProviderError, match="confirm_direct"):
+        await provider.start(ProviderConfig(provider="chrome-direct"))
+
+
+@pytest.mark.asyncio
+async def test_raw_cdp_resolves_existing_target_without_creating() -> None:
+    client = _FakeCdpClient(
+        [
+            {
+                "targetId": "target-1",
+                "type": "page",
+                "url": "https://www.baidu.com/",
+            }
+        ]
+    )
+
+    target = await _resolve_page_target(client, target_id="target-1", create_new=False)  # type: ignore[arg-type]
+
+    assert target["targetId"] == "target-1"
+    assert "Target.createTarget" not in client.calls
+
+
+@pytest.mark.asyncio
+async def test_raw_cdp_raises_for_missing_persisted_target() -> None:
+    client = _FakeCdpClient([])
+
+    with pytest.raises(ProviderError, match="no longer available"):
+        await _resolve_page_target(client, target_id="missing", create_new=False)  # type: ignore[arg-type]
+
+
+@pytest.mark.asyncio
+async def test_raw_cdp_creates_target_when_requested() -> None:
+    client = _FakeCdpClient([])
+
+    target = await _resolve_page_target(client, create_new=True)  # type: ignore[arg-type]
+
+    assert target["targetId"] == "created-target"
+    assert "Target.createTarget" in client.calls
+
+
+def test_raw_cdp_prefers_related_web_target() -> None:
+    target = _best_page_target(
+        [
+            {"targetId": "blank", "type": "page", "url": "about:blank"},
+            {"targetId": "other", "type": "page", "url": "https://example.com/"},
+            {
+                "targetId": "related",
+                "type": "page",
+                "url": "https://top.baidu.com/board",
+                "openerId": "source",
+            },
+        ],
+        opener_target_id="source",
+    )
+
+    assert target["targetId"] == "related"
 
 
 def test_session_store_roundtrip(tmp_path: Path) -> None:
@@ -56,6 +121,12 @@ def test_redaction() -> None:
     assert result["headers"]["Content-Type"] == "application/json"
     assert result["api_key"] == "[REDACTED]"
     assert result["nested"]["cookie"] == "[REDACTED]"
+
+
+def test_action_result_verification_field_defaults() -> None:
+    result = ActionResult(type="click", success=True)
+
+    assert result.verification == {}
 
 
 def test_observe_ranks_matching_element() -> None:
@@ -168,3 +239,18 @@ def _sample_state() -> PageState:
             ),
         ],
     )
+
+
+class _FakeCdpClient:
+    def __init__(self, targets: list[dict[str, object]]) -> None:
+        self.targets = targets
+        self.calls: list[str] = []
+
+    async def send(self, method: str, params: dict[str, object] | None = None) -> dict[str, object]:
+        self.calls.append(method)
+        if method == "Target.getTargets":
+            return {"targetInfos": self.targets}
+        if method == "Target.createTarget":
+            self.targets.append({"targetId": "created-target", "type": "page", "url": "about:blank"})
+            return {"targetId": "created-target"}
+        raise AssertionError(f"unexpected method: {method}")

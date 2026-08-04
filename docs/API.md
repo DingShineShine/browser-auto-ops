@@ -5,6 +5,7 @@
 ```bash
 bao session start --provider adspower-cdp --ads-base-url http://host:50325 --ads-user-id profile-id
 bao session start --provider local-chrome --user-data-dir E:\tmp\bao-profile --headful
+bao session start --provider chrome-direct --confirm-direct --remote-debugging-port 9222
 bao session start --provider cdp --cdp-url http://127.0.0.1:9222
 bao session list
 bao session stop s_xxx
@@ -65,6 +66,42 @@ Confirmed action request:
   "require_confirm": true
 }
 ```
+
+Action response shape:
+
+```json
+{
+  "result": {
+    "type": "click",
+    "success": true,
+    "message": "clicked with mouse",
+    "fallback_used": false,
+    "verification": {
+      "before": {
+        "url": "https://www.baidu.com/",
+        "title": "百度一下，你就知道",
+        "target_id": "old-target",
+        "page_ids": ["old-target"]
+      },
+      "after": {
+        "url": "https://top.baidu.com/board?platform=pc",
+        "title": "百度热搜",
+        "target_id": "new-target",
+        "page_ids": ["old-target", "new-target"]
+      },
+      "url_changed": true,
+      "title_changed": true,
+      "target_changed": true,
+      "page_count_changed": true
+    }
+  },
+  "state": {}
+}
+```
+
+LLM callers should use `verification.after` and the returned `state` as the
+post-action truth. `success=true` alone only means the low-level operation did
+not error.
 
 Confirmed act request:
 

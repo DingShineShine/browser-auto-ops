@@ -11,6 +11,7 @@
 
 - [x] `adspower-cdp`
 - [x] `local-chrome`
+- [x] `chrome-direct`
 - [x] `cdp`
 - [ ] ADS real profile smoke test
 
@@ -28,6 +29,8 @@
 - [x] hover
 - [x] JS fallback
 - [x] executor-level confirmation gate for dangerous operations
+- [x] action verification metadata
+- [x] post-action active page/target reconciliation
 - [ ] advanced iframe coordinate mapping
 
 ## P4 Network

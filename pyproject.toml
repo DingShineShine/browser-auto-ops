@@ -9,8 +9,10 @@ dependencies = [
     "httpx>=0.27",
     "playwright>=1.45",
     "pydantic>=2.7",
+    "pywinauto>=0.6.9; sys_platform == 'win32'",
     "typer>=0.12",
     "uvicorn>=0.30",
+    "websocket-client>=1.8",
 ]
 
 [project.optional-dependencies]
@@ -32,4 +34,3 @@ packages = ["src/browser_auto_ops"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 asyncio_mode = "auto"
-

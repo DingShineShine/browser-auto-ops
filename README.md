@@ -5,7 +5,7 @@ local Chrome, and generic CDP endpoints.
 
 It implements the v1 plan:
 
-- Providers: `adspower-cdp`, `local-chrome`, `cdp`
+- Providers: `adspower-cdp`, `local-chrome`, `chrome-direct`, `cdp`
 - BrowserAct-style `state` with indexed interactive elements
 - Deterministic action executor with real browser events first, `hover`, and JS fallback
 - Executor-level confirmation gate for dangerous operations

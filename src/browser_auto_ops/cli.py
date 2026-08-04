@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import sys
 from pathlib import Path
 from typing import Optional
 
@@ -22,6 +23,12 @@ app.add_typer(session_app, name="session")
 app.add_typer(network_app, name="network")
 app.add_typer(forge_app, name="forge")
 
+for stream in (sys.stdout, sys.stderr):
+    try:
+        stream.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
 
 def run(coro):
     return asyncio.run(coro)
@@ -37,6 +44,9 @@ def session_start(
     user_data_dir: Optional[Path] = typer.Option(None, "--user-data-dir"),
     headful: bool = typer.Option(False, "--headful"),
     chrome_path: Optional[Path] = typer.Option(None, "--chrome-path"),
+    chrome_profile: Optional[str] = typer.Option(None, "--chrome-profile"),
+    confirm_direct: bool = typer.Option(False, "--confirm-direct"),
+    remote_debugging_port: Optional[int] = typer.Option(None, "--remote-debugging-port"),
     start_url: Optional[str] = typer.Option(None, "--start-url"),
 ) -> None:
     async def _main() -> None:
@@ -49,6 +59,9 @@ def session_start(
             user_data_dir=user_data_dir,
             headful=headful,
             chrome_path=chrome_path,
+            chrome_profile=chrome_profile,
+            confirm_direct=confirm_direct,
+            remote_debugging_port=remote_debugging_port,
             start_url=start_url,
         )
         manager = SessionManager()
@@ -87,6 +100,7 @@ def state(session_id: str, json_output: bool = typer.Option(False, "--json")) ->
         manager, _ = await _attach(session_id)
         try:
             page_state = await manager.state(session_id)
+            _persist_attached(manager, session_id)
             if json_output:
                 typer.echo(json.dumps(page_state.model_dump(mode="json"), ensure_ascii=False, indent=2))
             else:
@@ -168,6 +182,7 @@ def observe(session_id: str, goal: str) -> None:
         manager, _ = await _attach(session_id)
         try:
             page_state = await manager.state(session_id)
+            _persist_attached(manager, session_id)
             candidates = ObserveService().observe(page_state, goal)
             typer.echo(json.dumps([item.model_dump(mode="json") for item in candidates], ensure_ascii=False, indent=2))
         finally:
@@ -201,6 +216,7 @@ def act(session_id: str, goal: str, confirm: bool = typer.Option(False, "--confi
             for request in actions:
                 result, _ = await manager.action(session_id, request)
                 results.append(result.model_dump(mode="json"))
+                _persist_attached(manager, session_id)
             typer.echo(json.dumps({"actions": [a.model_dump(mode="json") for a in actions], "results": results}, ensure_ascii=False, indent=2))
         finally:
             await manager.sessions[session_id].connection.disconnect()
@@ -216,6 +232,7 @@ def extract(session_id: str, goal: str, schema: Optional[str] = typer.Option(Non
             schema_obj = json.loads(schema) if schema else None
             data = await ExtractService().extract(managed.connection.page, goal, schema_obj)
             managed.trace.event("extract", data)
+            _persist_attached(manager, session_id)
             typer.echo(json.dumps(data, ensure_ascii=False, indent=2))
         finally:
             await managed.connection.disconnect()
@@ -286,6 +303,7 @@ def _action(session_id: str, request: ActionRequest) -> None:
         manager, _ = await _attach(session_id)
         try:
             result, after_state = await manager.action(session_id, request)
+            _persist_attached(manager, session_id)
             payload = {"result": result.model_dump(mode="json")}
             if after_state:
                 payload["state"] = after_state.model_dump(mode="json")
@@ -304,3 +322,9 @@ async def _attach(session_id: str):
     manager = SessionManager()
     managed = await manager.attach(session)
     return manager, managed
+
+
+def _persist_attached(manager: SessionManager, session_id: str) -> None:
+    managed = manager.sessions.get(session_id)
+    if managed:
+        SessionStore().save(managed.session)

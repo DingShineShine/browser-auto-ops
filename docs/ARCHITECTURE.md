@@ -6,6 +6,7 @@ CLI / FastAPI
     -> BrowserProvider
       -> AdspowerCdpProvider
       -> LocalChromeProvider
+      -> ChromeDirectProvider
       -> GenericCdpProvider
     -> SnapshotEngine
     -> ActionExecutor
@@ -31,4 +32,3 @@ class BrowserProvider(Protocol):
 - `ManagedSession`: runtime tuple of metadata, connection, trace, network recorder, and last state.
 
 CLI commands reconnect to stored CDP URLs per invocation. FastAPI keeps live sessions in memory.
-

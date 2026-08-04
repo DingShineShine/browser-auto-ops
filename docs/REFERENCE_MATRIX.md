@@ -6,6 +6,7 @@ This project does not copy large source blocks from referenced projects. Each ro
 |---|---|---|---|
 | `adspower-cdp` provider | AdsPower Local API docs, existing TT Kotlin flow | Start profile, read `ws.puppeteer`, connect with CDP | `browser_auto_ops.providers.adspower_cdp.AdspowerCdpProvider` |
 | `local-chrome` provider | Browser Use / Playwright local browser patterns | Launch isolated Chrome profile with remote debugging | `browser_auto_ops.providers.local_chrome.LocalChromeProvider` |
+| `chrome-direct` provider | BrowserAct `chrome-direct` local mode and installed package docs/introspection | Use `DevToolsActivePort`, raw CDP, default-profile remote debugging flag, and auto-allow watcher | `browser_auto_ops.providers.chrome_direct.ChromeDirectProvider` / `providers.raw_cdp` |
 | `cdp` provider | Playwright `connect_over_cdp`, Chrome DevTools Protocol | Treat CDP URL as the universal browser handle | `browser_auto_ops.providers.cdp.GenericCdpProvider` |
 | Browser provider abstraction | Steel Browser, Skyvern browser engine | Separate browser lifecycle from automation logic | `browser_auto_ops.providers.base.BrowserProvider` |
 | State/index | BrowserAct, Browser Use DOM service | Convert page into indexed interactive element list | `browser_auto_ops.snapshot.scanner.SnapshotEngine` |
@@ -25,4 +26,3 @@ Useful source links:
 - Steel Browser: https://github.com/steel-dev/steel-browser
 - Chrome DevTools Protocol: https://chromedevtools.github.io/devtools-protocol/
 - BrowserAct docs: https://docs.browseract.com/agent-cli/
-

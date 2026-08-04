@@ -36,3 +36,9 @@ Trace root:
 ```
 
 Workflow is intentionally minimal in v1. `act` can perform short one to three step plans. Longer workflow YAML/JSON orchestration is P6 future work.
+
+`action.result` events include the same verification payload returned by the
+CLI/API. This is the trace-level evidence for whether a step changed URL,
+opened a new target/tab, changed title, or stayed on the same page. Replay and
+Forge generation should prefer this verification record over inferring success
+from the raw action status alone.

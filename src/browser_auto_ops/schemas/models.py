@@ -8,7 +8,7 @@ from uuid import uuid4
 from pydantic import BaseModel, Field
 
 
-ProviderName = Literal["adspower-cdp", "local-chrome", "cdp"]
+ProviderName = Literal["adspower-cdp", "local-chrome", "chrome-direct", "cdp"]
 ActionType = Literal[
     "click",
     "input_text",
@@ -41,6 +41,8 @@ class ProviderConfig(BaseModel):
     user_data_dir: Path | None = None
     headful: bool = False
     chrome_path: Path | None = None
+    chrome_profile: str | None = None
+    confirm_direct: bool = False
     start_url: str | None = None
     remote_debugging_port: int | None = None
     timeout_ms: int = 30_000
@@ -137,6 +139,7 @@ class ActionResult(BaseModel):
     message: str = ""
     fallback_used: bool = False
     data: Any = None
+    verification: dict[str, Any] = Field(default_factory=dict)
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: datetime = Field(default_factory=utc_now)
 
@@ -161,4 +164,3 @@ class NetworkRequestInfo(BaseModel):
     error: str | None = None
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: datetime | None = None
-

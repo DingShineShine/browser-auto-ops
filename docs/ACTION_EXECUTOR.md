@@ -9,7 +9,8 @@ index -> StateElement -> safety confirmation gate
   -> real browser event via Playwright mouse/keyboard/locator
   -> JS fallback only if needed
   -> wait stable
-  -> refresh state
+  -> reconcile active page/target
+  -> refresh state from the reconciled page
 ```
 
 Supported v1 actions:
@@ -54,3 +55,37 @@ HTTP callers set:
 ```
 
 The project should not become JS-only automation. Real browser events are the default because many modern apps listen for pointer, keyboard, and composition events.
+
+## Verification Metadata
+
+Every action result may include `verification`:
+
+```json
+{
+  "before": {
+    "url": "https://www.baidu.com/",
+    "title": "百度一下，你就知道",
+    "target_id": "old",
+    "page_ids": ["old"]
+  },
+  "after": {
+    "url": "https://top.baidu.com/board?platform=pc&sa=pcindex_entry",
+    "title": "百度热搜",
+    "target_id": "new",
+    "page_ids": ["old", "new"]
+  },
+  "url_changed": true,
+  "title_changed": true,
+  "target_changed": true,
+  "page_count_changed": true
+}
+```
+
+The calling LLM should treat `success=true` as "the low-level event was sent",
+then use `verification` plus the returned `state` to decide whether the task
+goal actually progressed.
+
+For raw CDP `chrome-direct`, the session manager compares CDP targets before and
+after an action. If a click opens a new related page target, it switches the
+session page to that target, updates `session.meta.target_id`, and persists it
+for the next CLI call.
