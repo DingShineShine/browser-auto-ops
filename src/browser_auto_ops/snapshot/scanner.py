@@ -78,6 +78,16 @@ DOM_SCANNER = r"""
     return el;
   }
 
+  function componentInfo(el, cls, kind) {
+    if (cls.includes('el-dialog__wrapper') || cls.includes('el-message-box__wrapper')) return {component: 'element-ui', component_role: 'dialog'};
+    if (cls.includes('el-popover')) return {component: 'element-ui', component_role: 'popover'};
+    if (cls.includes('el-tree-node')) return {component: 'element-ui', component_role: 'treeitem'};
+    if (cls.includes('el-checkbox')) return {component: 'element-ui', component_role: 'checkbox'};
+    if (cls.includes('el-button') || kind === 'button') return {component: cls.includes('el-') ? 'element-ui' : 'native', component_role: 'button'};
+    if (cls.includes('el-input') || kind === 'input') return {component: cls.includes('el-') ? 'element-ui' : 'native', component_role: 'input'};
+    return {component: null, component_role: null};
+  }
+
   function labelFor(el) {
     const id = el.getAttribute('id');
     if (id) {
@@ -187,10 +197,13 @@ DOM_SCANNER = r"""
       );
       if (shouldKeep) {
         const target = actionTarget(el);
+        const component = componentInfo(el, String(el.className || ''), cls.kind);
         out.push({
           tag,
           kind: cls.kind,
           role: cls.role || null,
+          component: component.component,
+          component_role: component.component_role,
           name,
           text: text.slice(0, 200),
           placeholder: el.getAttribute('placeholder') || '',
@@ -241,6 +254,7 @@ class SnapshotEngine:
         elements.sort(key=lambda item: (0 if item.modal else 1, item.rect.y if item.rect else 0))
         for index, element in enumerate(elements, start=1):
             element.index = index
+            element.ref = f"@e{index}"
         title = await page.title()
         viewport = page.viewport_size or {}
         return PageState(
@@ -282,6 +296,8 @@ def _to_element(
             ElementLocator(type="xpath", value=raw.get("xpath") or ""),
             ElementLocator(type="css", value=raw.get("css") or ""),
         ],
+        component=raw.get("component"),
+        component_role=raw.get("component_role"),
         rect=rect,
         frame_index=frame_index,
         frame_url=frame_url,

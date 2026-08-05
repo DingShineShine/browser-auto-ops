@@ -328,7 +328,6 @@ def state(
     json_output: bool = typer.Option(False, "--json"),
     full: bool = typer.Option(False, "--full"),
 ) -> None:
-    _ = full
     session_ref = _session_ref(session_id)
     if _daemon_available():
         payload = _daemon_request("GET", f"/sessions/{session_ref}/state")
@@ -336,7 +335,7 @@ def state(
         if json_output or _ctx["format"] == "json":
             _echo(page_state.model_dump(mode="json"), force_json=True)
         else:
-            typer.echo(page_state.render_text())
+            typer.echo(_state_for_text(page_state, full=full).render_text())
         return
 
     async def _main() -> None:
@@ -347,7 +346,7 @@ def state(
             if json_output or _ctx["format"] == "json":
                 _echo(page_state.model_dump(mode="json"), force_json=True)
             else:
-                typer.echo(page_state.render_text())
+                typer.echo(_state_for_text(page_state, full=full).render_text())
         finally:
             await manager.sessions[attached_ref].connection.disconnect()
 
@@ -1014,6 +1013,12 @@ def _echo(payload: Any, *, force_json: bool = False) -> None:
         typer.echo(json.dumps(payload, ensure_ascii=False, indent=2))
     else:
         typer.echo(payload)
+
+
+def _state_for_text(state: PageState, *, full: bool = False, limit: int = 350) -> PageState:
+    if full or len(state.elements) <= limit:
+        return state
+    return state.model_copy(update={"elements": state.elements[:limit]})
 
 
 def _daemon_url() -> str:

@@ -100,6 +100,7 @@ class ElementLocator(BaseModel):
 
 class StateElement(BaseModel):
     index: int
+    ref: str | None = None
     kind: str
     tag: str
     role: str | None = None
@@ -110,6 +111,8 @@ class StateElement(BaseModel):
     locator: ElementLocator
     action_locator: ElementLocator | None = None
     selector_candidates: list[ElementLocator] = Field(default_factory=list)
+    component: str | None = None
+    component_role: str | None = None
     rect: ElementRect | None = None
     frame_index: int = 0
     frame_url: str | None = None
@@ -143,7 +146,8 @@ class PageState(BaseModel):
             marker = "*" if element.changed else ""
             suffix = _render_flags(element)
             role = f" role={element.role}" if element.role else ""
-            lines.append(f'{marker}[{element.index}] @e{element.index} {element.kind}{role} "{label}"{suffix}')
+            ref = element.ref or f"@e{element.index}"
+            lines.append(f'{marker}[{element.index}] {ref} {element.kind}{role} "{label}"{suffix}')
         return "\n".join(lines)
 
 
@@ -161,6 +165,8 @@ def _render_flags(element: StateElement) -> str:
             flags.append(f"{name}={str(value).lower()}")
     if element.modal:
         flags.append("modal=true")
+    if element.component_role:
+        flags.append(f"component_role={element.component_role}")
     return f" {' '.join(flags)}" if flags else ""
 
 

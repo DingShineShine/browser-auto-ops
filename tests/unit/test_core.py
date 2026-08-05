@@ -16,7 +16,7 @@ from browser_auto_ops.forge import ForgeEngine
 from browser_auto_ops.intelligence import ActService, ObserveService
 from browser_auto_ops.providers.registry import provider_for
 from browser_auto_ops.providers.raw_cdp import _best_page_target, _expression, _resolve_page_target
-from browser_auto_ops.safety import action_requires_confirmation, confirmation_reason
+from browser_auto_ops.safety import action_requires_confirmation, confirmation_reason, is_dangerous_text
 from browser_auto_ops.schemas import (
     ActionRequest,
     ActionResult,
@@ -311,6 +311,21 @@ def test_safety_requires_confirmation_for_dangerous_button() -> None:
 
     assert action_requires_confirmation(request, element)
     assert confirmation_reason(request, element)
+
+
+def test_safety_does_not_block_safe_confirm_words() -> None:
+    assert not is_dangerous_text("确认选择")
+    assert not is_dangerous_text("确定")
+    assert not is_dangerous_text("前往查看")
+    assert not is_dangerous_text("开始筛选")
+    assert not is_dangerous_text("保存当前模式")
+
+
+def test_safety_still_blocks_high_risk_actions() -> None:
+    assert is_dangerous_text("确认删除")
+    assert is_dangerous_text("确认支付")
+    assert is_dangerous_text("提交订单")
+    assert is_dangerous_text("修改密码")
 
 
 def test_act_dangerous_goal_blocks_until_confirmed() -> None:

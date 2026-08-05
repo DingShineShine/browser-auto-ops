@@ -3,7 +3,7 @@ from __future__ import annotations
 from browser_auto_ops.schemas import ActionRequest, StateElement
 
 
-DANGEROUS_WORDS = {
+DANGEROUS_ACTION_WORDS = {
     "delete",
     "remove",
     "destroy",
@@ -11,11 +11,8 @@ DANGEROUS_WORDS = {
     "payment",
     "purchase",
     "checkout",
-    "submit",
+    "submit order",
     "publish",
-    "confirm",
-    "approve",
-    "authorize",
     "withdraw",
     "transfer",
     "refund",
@@ -26,11 +23,8 @@ DANGEROUS_WORDS = {
     "\u79fb\u9664",
     "\u652f\u4ed8",
     "\u4ed8\u6b3e",
-    "\u63d0\u4ea4",
+    "\u63d0\u4ea4\u8ba2\u5355",
     "\u53d1\u5e03",
-    "\u786e\u8ba4",
-    "\u6279\u51c6",
-    "\u6388\u6743",
     "\u8f6c\u8d26",
     "\u63d0\u73b0",
     "\u9000\u6b3e",
@@ -54,7 +48,7 @@ def is_dangerous_text(value: str | None) -> bool:
     if not value:
         return False
     text = value.lower()
-    return any(word in text for word in DANGEROUS_WORDS)
+    return any(word in text for word in DANGEROUS_ACTION_WORDS)
 
 
 def confirmation_reason(request: ActionRequest, element: StateElement | None = None) -> str | None:
