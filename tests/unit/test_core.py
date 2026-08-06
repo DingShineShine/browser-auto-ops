@@ -162,6 +162,26 @@ def test_browser_store_roundtrip(tmp_path: Path) -> None:
     assert store.get("amazon-us-01").allowed_domains == ["sellercentral.amazon.com"]  # type: ignore[union-attr]
 
 
+def test_browser_store_replaces_existing_name(tmp_path: Path) -> None:
+    store = BrowserStore(tmp_path)
+    first = BrowserIdentity(
+        type="ads",
+        name="seller",
+        provider_config=ProviderConfig(provider="adspower-cdp", ads_base_url="http://old", ads_user_id="old"),
+    )
+    second = BrowserIdentity(
+        type="ads",
+        name="seller",
+        provider_config=ProviderConfig(provider="adspower-cdp", ads_base_url="http://new", ads_user_id="new"),
+    )
+
+    store.save(first)
+    store.save(second)
+
+    assert len(store.list()) == 1
+    assert store.get("seller").browser_id == second.browser_id  # type: ignore[union-attr]
+
+
 def test_public_ads_browser_maps_to_adspower_provider() -> None:
     browser = BrowserIdentity(
         type="ads",

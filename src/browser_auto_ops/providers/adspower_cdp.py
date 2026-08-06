@@ -47,6 +47,8 @@ class AdspowerCdpProvider:
                 "ads_start_response": payload,
             }
         )
+        if config.start_url:
+            await connection.page.goto(config.start_url, wait_until="domcontentloaded")
         return connection
 
     async def connect(self, session: BrowserSession) -> BrowserConnection:

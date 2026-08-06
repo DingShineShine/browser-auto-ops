@@ -29,6 +29,9 @@ class BrowserStore:
     def save(self, browser: BrowserIdentity) -> None:
         browsers = self._read()
         browser.updated_at = datetime.now(timezone.utc)
+        for browser_id, existing in list(browsers.items()):
+            if existing.name == browser.name and browser_id != browser.browser_id:
+                browsers.pop(browser_id, None)
         browsers[browser.browser_id] = browser
         self._write(browsers)
 
