@@ -5,7 +5,7 @@ allowed-tools: Bash(bao:*)
 metadata:
   author: browser-auto-ops
   version: "0.1.0"
-  install: "uv tool install git+ssh://git@git.shinebed.com.cn:2222/datagroup/browser-auto-ops.git --python 3.12"
+  install: "uv tool install git+ssh://git@github.com/DingShineShine/browser-auto-ops.git --python 3.12"
   requires:
     runtime: "Python 3.12+, uv package manager"
   permissions:
