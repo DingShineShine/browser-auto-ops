@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from datetime import datetime, timezone
 from typing import Iterable
 
@@ -16,6 +17,7 @@ class NetworkRecorder:
         self.requests: dict[str, NetworkRequestInfo] = {}
         self._by_playwright_request: dict[Request, str] = {}
         self._enabled = False
+        self._body_tasks: set[asyncio.Task[None]] = set()
 
     async def enable(self) -> None:
         if self._enabled:
@@ -72,7 +74,9 @@ class NetworkRecorder:
         info.response_headers = redact(response.headers)
         info.finished_at = datetime.now(timezone.utc)
         try:
-            asyncio.create_task(self._capture_body(response, request_id))
+            task = asyncio.create_task(self._capture_body(response, request_id))
+            self._body_tasks.add(task)
+            task.add_done_callback(self._body_tasks.discard)
         except RuntimeError:
             pass
 
@@ -86,10 +90,18 @@ class NetworkRecorder:
 
     async def _capture_body(self, response: Response, request_id: str) -> None:
         try:
-            body = await response.text()
-            if len(body) > 1_000_000:
-                body = body[:1_000_000] + "\n[TRUNCATED]"
-            self.requests[request_id].response_body = body
+            body = await response.body()
+            info = self.requests[request_id]
+            if len(body) <= 5_000_000:
+                info.response_body_base64 = base64.b64encode(body).decode("ascii")
+            else:
+                info.response_body_truncated = True
+            if _is_text_like(response.headers.get("content-type", "")):
+                text = body.decode("utf-8", errors="replace")
+                if len(text) > 1_000_000:
+                    text = text[:1_000_000] + "\n[TRUNCATED]"
+                    info.response_body_truncated = True
+                info.response_body = text
         except Exception as exc:
             self.requests[request_id].error = f"response body unavailable: {exc}"
 
@@ -102,4 +114,9 @@ def _safe_post_data(request: Request) -> str | None:
         return data
     except Exception:
         return None
+
+
+def _is_text_like(content_type: str) -> bool:
+    value = content_type.lower()
+    return any(marker in value for marker in ("text/", "json", "csv", "xml", "javascript", "graphql"))
 

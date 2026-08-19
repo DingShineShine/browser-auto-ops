@@ -35,6 +35,9 @@ def test_generated_skill_is_replay_not_extract_shell(tmp_path: Path) -> None:
     assert workflow["auth"]
     assert "Email" not in "\n".join(workflow["main_steps"])
     assert report["auth_branch"] is True
+    assert "Component scripts" in text
+    assert "download-artifact.py" in workflow["component_scripts"]
+    assert (skill / "scripts" / "download-artifact.py").exists()
     replay = workflow_actions(workflow, live={"url": workflow["last_url"], "title": "Dropship Orders"})
     assert replay
     assert all((item.get("match") or {}).get("placeholder") != "Email" for item in replay)
@@ -86,3 +89,21 @@ def test_failed_actions_are_reported_not_rendered(tmp_path: Path) -> None:
     assert "click click" not in text
     assert len(workflow["locators"]) == 1
     assert report["actions"]["dropped_by_reason"]["failed_action"] == 1
+
+
+def test_relative_date_goal_writes_date_component_script(tmp_path: Path) -> None:
+    trace = tmp_path / "trace"
+    trace.mkdir()
+    (trace / "events.jsonl").write_text("", encoding="utf-8")
+
+    skill = ForgeEngine(tmp_path / "skills").generate(
+        trace,
+        "date-report",
+        "download report from T-3 to T-2",
+        install=False,
+    )
+    workflow = __import__("json").loads((skill / "evidence" / "workflow.json").read_text(encoding="utf-8"))
+
+    assert "date-params.py" in workflow["component_scripts"]
+    assert (skill / "scripts" / "date-params.py").exists()
+    assert "T-3" in (skill / "SKILL.md").read_text(encoding="utf-8")

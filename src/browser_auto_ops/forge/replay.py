@@ -72,4 +72,6 @@ def _match_payload(locator: dict[str, Any]) -> dict[str, Any]:
     if within:
         payload["within_role"] = within.get("role")
         payload["within_text"] = within.get("text")
+        if within.get("text_mode"):
+            payload["within_text_mode"] = within.get("text_mode")
     return payload

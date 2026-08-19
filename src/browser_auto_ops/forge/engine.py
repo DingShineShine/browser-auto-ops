@@ -7,6 +7,7 @@ from typing import Any
 from urllib.parse import parse_qs, urlparse
 
 from browser_auto_ops.forge.api_scripts import compact_network, write_api_scripts
+from browser_auto_ops.forge.component_scripts import write_component_scripts
 from browser_auto_ops.forge.install import install_skill
 from browser_auto_ops.forge.workflow import build_workflow, generation_report, render_skill
 
@@ -49,6 +50,8 @@ class ForgeEngine:
         api_scripts = write_api_scripts(scripts, summary)
         summary["api_scripts"] = api_scripts
         workflow = build_workflow(summary, skill_name, resolved_goal)
+        component_scripts = write_component_scripts(scripts, workflow)
+        workflow["component_scripts"] = component_scripts
         (root / "SKILL.md").write_text(render_skill(workflow), encoding="utf-8")
         extract_script = _script_template(summary)
         (scripts / "extract.py").write_text(extract_script, encoding="utf-8")

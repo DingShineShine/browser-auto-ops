@@ -31,8 +31,10 @@ def role_of(element: dict[str, Any]) -> str:
         return role
     kind = _clean(element.get("kind")).lower()
     tag = _clean(element.get("tag")).lower()
-    if kind in {"button", "link", "checkbox", "radio", "tab", "dialog", "textbox"}:
+    if kind in {"label", "button", "link", "checkbox", "radio", "tab", "dialog", "textbox"}:
         return kind
+    if tag == "label":
+        return "label"
     if tag in {"button", "a", "input", "select", "textarea", "dialog"}:
         if tag == "a":
             return "link"
@@ -72,10 +74,13 @@ def locator_for_element(
         match["role"] = role
     if element.get("fillable") and _clean(element.get("placeholder")):
         match["placeholder"] = _clean(element.get("placeholder"))
+        match["placeholder_mode"] = "exact"
     elif element.get("fillable") and name:
         match["label"] = name
+        match["label_mode"] = "exact"
     elif name:
         match["text"] = name
+        match["text_mode"] = "exact"
     default_action = "click"
     if element.get("fillable"):
         default_action = "input"
@@ -98,6 +103,7 @@ def locator_for_element(
             locator["within"] = {
                 "role": role_of(container),
                 "text": accessible_name(container) or role_of(container),
+                "text_mode": "contains",
             }
     return locator
 

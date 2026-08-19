@@ -47,6 +47,9 @@ def find_all(state: PageState, match: ElementMatch | dict) -> list[StateElement]
     candidates = [element for element in state.elements if _matches(element, criteria)]
     if criteria.within_role or criteria.within_text:
         candidates = [element for element in candidates if _within_matches(state, element, criteria)]
+    if criteria.nth is not None:
+        index = criteria.nth - 1
+        return [candidates[index]] if 0 <= index < len(candidates) else []
     return candidates
 
 
@@ -72,8 +75,10 @@ def role_of(element: StateElement) -> str:
         return role
     kind = _clean(element.kind).lower()
     tag = _clean(element.tag).lower()
-    if kind in {"button", "link", "checkbox", "radio", "tab", "dialog", "textbox"}:
+    if kind in {"label", "button", "link", "checkbox", "radio", "tab", "dialog", "textbox"}:
         return kind
+    if tag == "label":
+        return "label"
     if tag == "a":
         return "link"
     if tag == "input":
@@ -91,12 +96,19 @@ def _matches(element: StateElement, criteria: ElementMatch) -> bool:
         return False
     if criteria.kind and _clean(element.kind).lower() != _clean(criteria.kind).lower():
         return False
-    if criteria.placeholder and not _text_match(element.placeholder, criteria.placeholder):
+    if criteria.placeholder and not _text_match(element.placeholder, criteria.placeholder, criteria.placeholder_mode):
         return False
-    wanted_label = criteria.label or criteria.name or criteria.text
-    if wanted_label:
+    if criteria.label:
         haystacks = [accessible_name(element), element.name, element.text, element.placeholder, element.value]
-        if not any(_text_match(value, wanted_label) for value in haystacks):
+        if not any(_text_match(value, criteria.label, criteria.label_mode) for value in haystacks):
+            return False
+    if criteria.name:
+        haystacks = [accessible_name(element), element.name]
+        if not any(_text_match(value, criteria.name, criteria.name_mode) for value in haystacks):
+            return False
+    if criteria.text:
+        haystacks = [accessible_name(element), element.text, element.name, element.placeholder, element.value]
+        if not any(_text_match(value, criteria.text, criteria.text_mode) for value in haystacks):
             return False
     return True
 
@@ -113,7 +125,7 @@ def _within_matches(state: PageState, element: StateElement, criteria: ElementMa
     container = containers[-1]
     if criteria.within_role and role_of(container) != _clean(criteria.within_role).lower():
         return False
-    if criteria.within_text and not _text_match(accessible_name(container) or container.text, criteria.within_text):
+    if criteria.within_text and not _text_match(accessible_name(container) or container.text, criteria.within_text, criteria.within_text_mode):
         return False
     return True
 
@@ -133,7 +145,11 @@ def _no_match_message(state: PageState, match: ElementMatch) -> str:
 
 
 def _ambiguous_message(matches: Iterable[StateElement], match: ElementMatch) -> str:
-    return f"multiple elements matched {match.model_dump(exclude_none=True)}; narrow with within: {_candidate_summaries(matches)}"
+    return (
+        f"multiple elements matched {match.model_dump(exclude_none=True)}; "
+        "narrow with exact/starts_with, nth, or within: "
+        f"{_candidate_summaries(matches)}"
+    )
 
 
 def _candidate_summaries(elements: Iterable[StateElement]) -> list[dict[str, str | int | None]]:
@@ -143,10 +159,16 @@ def _candidate_summaries(elements: Iterable[StateElement]) -> list[dict[str, str
     ]
 
 
-def _text_match(value: str | None, expected: str | None) -> bool:
+def _text_match(value: str | None, expected: str | None, mode: str = "contains") -> bool:
     left = _clean(value).lower()
     right = _clean(expected).lower()
-    return bool(right) and right in left
+    if not right:
+        return False
+    if mode == "exact":
+        return left == right
+    if mode == "starts_with":
+        return left.startswith(right)
+    return right in left
 
 
 def _clean(value: str | None) -> str:

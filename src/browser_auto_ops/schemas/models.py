@@ -134,12 +134,18 @@ class StateElement(BaseModel):
 class ElementMatch(BaseModel):
     role: str | None = None
     text: str | None = None
+    text_mode: Literal["contains", "exact", "starts_with"] = "contains"
     name: str | None = None
+    name_mode: Literal["contains", "exact", "starts_with"] = "contains"
     label: str | None = None
+    label_mode: Literal["contains", "exact", "starts_with"] = "contains"
     placeholder: str | None = None
+    placeholder_mode: Literal["contains", "exact", "starts_with"] = "contains"
     kind: str | None = None
     within_role: str | None = None
     within_text: str | None = None
+    within_text_mode: Literal["contains", "exact", "starts_with"] = "contains"
+    nth: int | None = None
 
 
 class PageState(BaseModel):
@@ -249,6 +255,8 @@ class NetworkRequestInfo(BaseModel):
     response_headers: dict[str, str] = Field(default_factory=dict)
     post_data: str | None = None
     response_body: str | None = None
+    response_body_base64: str | None = None
+    response_body_truncated: bool = False
     error: str | None = None
     started_at: datetime = Field(default_factory=utc_now)
     finished_at: datetime | None = None

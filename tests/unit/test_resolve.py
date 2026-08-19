@@ -5,12 +5,21 @@ from browser_auto_ops.schemas import ActionRequest, ElementLocator, ElementMatch
 from browser_auto_ops.snapshot.resolve import find_all, resolve_element
 
 
-def _element(index: int, name: str, *, role: str = "button", ref: str | None = None, modal: bool = False) -> StateElement:
+def _element(
+    index: int,
+    name: str,
+    *,
+    role: str = "button",
+    kind: str | None = None,
+    tag: str | None = None,
+    ref: str | None = None,
+    modal: bool = False,
+) -> StateElement:
     return StateElement(
         index=index,
         ref=ref or f"@e{index}",
-        kind="dialog" if modal else "button",
-        tag="div" if modal else "button",
+        kind="dialog" if modal else kind or role,
+        tag="div" if modal else tag or ("label" if kind == "label" else "button"),
         role="dialog" if modal else role,
         name=name,
         text=name,
@@ -43,6 +52,26 @@ def test_resolve_by_role_and_name() -> None:
 def test_ambiguous_match_requires_scope() -> None:
     with pytest.raises(ElementNotFoundError, match="multiple elements"):
         resolve_element(_state(), ActionRequest(type="click", match=ElementMatch(role="button", text="Export")))
+
+
+def test_exact_text_avoids_parent_label_substring_match() -> None:
+    state = PageState(
+        session_id="s",
+        url="https://example.test",
+        title="Example",
+        elements=[
+            _element(1, "Wayfair Sponsored Products Product Report Keyword Report", role="", kind="label"),
+            _element(2, "Product Report", role="", kind="label"),
+        ],
+    )
+
+    match = ElementMatch(role="label", text="Product Report", text_mode="exact")
+    assert [item.index for item in find_all(state, match)] == [2]
+
+
+def test_nth_can_disambiguate_intentionally() -> None:
+    match = ElementMatch(role="button", text="Export", nth=2)
+    assert [item.index for item in find_all(_state(), match)] == [3]
 
 
 def test_occluded_flag_is_available_to_executor() -> None:

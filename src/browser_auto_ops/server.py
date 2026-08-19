@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import base64
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 import asyncio
 
 from fastapi import FastAPI, HTTPException
@@ -247,10 +249,24 @@ async def downloads_wait(session_id: str, payload: dict[str, Any]) -> dict[str, 
         if href:
             break
         await asyncio.sleep(2.0)
-    if not href:
-        raise HTTPException(status_code=404, detail="no completed export download link found")
     output = payload.get("output")
     output_dir = Path(output) if output else None
+    if not href:
+        item = _latest_download_artifact(manager.network_requests(resolved, resource_types=["xhr", "fetch"]))
+        if not item:
+            raise HTTPException(status_code=404, detail="no completed export download link or downloadable network artifact found")
+        content = _network_artifact_bytes(item)
+        if content is None:
+            raise HTTPException(status_code=404, detail="downloadable network artifact has no captured response body")
+        record = download_manager.save_bytes(
+            session_id=resolved,
+            browser_id=managed.session.browser_id,
+            source_url=str(item.get("url") or ""),
+            filename=str(payload.get("filename") or _filename_from_network(item)),
+            content=content,
+            output_dir=output_dir,
+        )
+        return record.model_dump(mode="json")
     record = await download_manager.download_url(
         session_id=resolved,
         browser_id=managed.session.browser_id,
@@ -431,3 +447,52 @@ async def _latest_export_href(page) -> str | None:
         """
     )
     return str(value) if value else None
+
+
+def _latest_download_artifact(items: list[Any]) -> dict[str, Any] | None:
+    for raw in reversed(items):
+        item = raw.model_dump(mode="json") if hasattr(raw, "model_dump") else raw
+        if isinstance(item, dict) and _looks_downloadable(item):
+            return item
+    return None
+
+
+def _looks_downloadable(item: dict[str, Any]) -> bool:
+    headers = item.get("response_headers") if isinstance(item.get("response_headers"), dict) else {}
+    content_type = str(headers.get("content-type") or headers.get("Content-Type") or "").lower()
+    disposition = str(headers.get("content-disposition") or headers.get("Content-Disposition") or "").lower()
+    url = str(item.get("url") or "").lower()
+    if "attachment" in disposition or "filename=" in disposition:
+        return True
+    if any(marker in content_type for marker in ("csv", "excel", "spreadsheet", "zip", "octet-stream")):
+        return True
+    return any(marker in url for marker in ("/download", "download", "export", "report")) and bool(
+        item.get("response_body_base64") or item.get("response_body")
+    )
+
+
+def _network_artifact_bytes(item: dict[str, Any]) -> bytes | None:
+    body64 = item.get("response_body_base64")
+    if isinstance(body64, str) and body64:
+        try:
+            return base64.b64decode(body64)
+        except Exception:
+            return None
+    body = item.get("response_body")
+    if isinstance(body, str):
+        return body.encode("utf-8")
+    return None
+
+
+def _filename_from_network(item: dict[str, Any]) -> str:
+    headers = item.get("response_headers") if isinstance(item.get("response_headers"), dict) else {}
+    disposition = str(headers.get("content-disposition") or headers.get("Content-Disposition") or "")
+    for part in disposition.split(";"):
+        if "filename" not in part.lower():
+            continue
+        _, _, value = part.partition("=")
+        cleaned = value.strip().strip('"')
+        if cleaned:
+            return cleaned
+    name = Path(unquote(urlparse(str(item.get("url") or "")).path)).name
+    return name or "download.bin"

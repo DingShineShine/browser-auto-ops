@@ -65,6 +65,41 @@ class DownloadManager:
         self.save(record)
         return record
 
+    def save_bytes(
+        self,
+        *,
+        session_id: str,
+        content: bytes,
+        source_url: str,
+        browser_id: str | None = None,
+        filename: str | None = None,
+        output_dir: Path | None = None,
+    ) -> DownloadRecord:
+        target_dir = output_dir or self.download_root / session_id
+        target_dir = target_dir.expanduser().resolve()
+        target_dir.mkdir(parents=True, exist_ok=True)
+        suggested = filename or _filename_from_url(source_url)
+        target = target_dir / suggested
+        record = DownloadRecord(
+            session_id=session_id,
+            browser_id=browser_id,
+            source_url=source_url,
+            suggested_filename=suggested,
+            final_path=str(target),
+            status="running",
+        )
+        self.save(record)
+        try:
+            target.write_bytes(content)
+            record.status = "completed"
+            record.finished_at = datetime.now(timezone.utc)
+        except Exception as exc:
+            record.status = "failed"
+            record.error = str(exc)
+            record.finished_at = datetime.now(timezone.utc)
+        self.save(record)
+        return record
+
     def _read(self) -> dict[str, DownloadRecord]:
         if not self.records_path.exists():
             return {}

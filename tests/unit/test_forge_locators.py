@@ -8,6 +8,7 @@ def test_locator_uses_role_and_name() -> None:
     )
     assert row["match"]["role"] == "button"
     assert row["match"]["text"] == "Clear All"
+    assert row["match"]["text_mode"] == "exact"
     assert "index" not in row
     assert "index" not in row["match"]
 
@@ -50,3 +51,14 @@ def test_locators_from_actions_keep_element_not_index() -> None:
     )
     assert rows[0]["match"]["text"] == "Clear All"
     assert "122" not in str(rows[0]["match"])
+
+
+def test_label_role_is_preserved_for_clickable_labels() -> None:
+    row = locator_for_element(
+        {"kind": "label", "tag": "label", "name": "Product Report", "text": "Product Report", "clickable": True},
+        action="click",
+    )
+
+    assert row["match"]["role"] == "label"
+    assert row["match"]["text"] == "Product Report"
+    assert row["match"]["text_mode"] == "exact"

@@ -92,7 +92,7 @@ def render_skill(workflow: dict[str, Any]) -> str:
     name = workflow["name"]
     goal = workflow["goal"]
     params_lines = "\n".join(
-        f"- `--{item['name']}` (from {item['source']}): `{item['value']}`"
+        _render_param(item)
         for item in workflow.get("parameters") or []
     ) or "- none extracted from this trace"
     locator_lines = []
@@ -116,6 +116,15 @@ def render_skill(workflow: dict[str, Any]) -> str:
     api_block = (
         f"\n## API paths\n\nIf the same network shape is still valid, prefer these captured API scripts:\n\n{api_lines}\n"
         if api_lines
+        else ""
+    )
+    component_lines = "\n".join(f"- `python scripts/{item}`" for item in workflow.get("component_scripts") or [])
+    component_block = (
+        "\n## Component scripts\n\n"
+        "Use these scripts as atomic helpers for parameter resolution or artifact saving. "
+        "The replay workflow above remains the primary control path.\n\n"
+        f"{component_lines}\n"
+        if component_lines
         else ""
     )
     start_url = workflow.get("start_url") or ""
@@ -172,8 +181,20 @@ Match role + accessible name / label / placeholder. Narrow with a container role
 - Do not write passwords, cookies, or Ads profile ids into this skill.
 - Login and other account-changing actions require `--confirm` after explicit user approval.
 - `scripts/extract.py` (and legacy `capability.py`) only read the page. Do not use them as the replay path.
+{component_block}
 {api_block}
 """
+
+
+def _render_param(item: dict[str, Any]) -> str:
+    kind = f", type `{item['type']}`" if item.get("type") else ""
+    details = []
+    if item.get("offset_days") is not None:
+        details.append(f"offset_days `{item['offset_days']}`")
+    if item.get("format_hints"):
+        details.append("formats " + ", ".join(f"`{value}`" for value in item["format_hints"]))
+    suffix = f" — {'; '.join(details)}" if details else ""
+    return f"- `--{item['name']}` (from {item['source']}{kind}): `{item['value']}`{suffix}"
 
 
 def _steps(actions: list[dict[str, Any]], locators: list[dict[str, Any]]) -> list[str]:
