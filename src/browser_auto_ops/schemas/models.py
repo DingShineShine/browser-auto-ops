@@ -131,6 +131,17 @@ class StateElement(BaseModel):
     attributes: dict[str, str] = Field(default_factory=dict)
 
 
+class ElementMatch(BaseModel):
+    role: str | None = None
+    text: str | None = None
+    name: str | None = None
+    label: str | None = None
+    placeholder: str | None = None
+    kind: str | None = None
+    within_role: str | None = None
+    within_text: str | None = None
+
+
 class PageState(BaseModel):
     session_id: str
     url: str
@@ -173,6 +184,8 @@ def _render_flags(element: StateElement) -> str:
 class ActionRequest(BaseModel):
     type: ActionType
     index: int | None = None
+    ref: str | None = None
+    match: ElementMatch | None = None
     text: str | None = None
     option: str | None = None
     direction: Literal["up", "down", "left", "right"] | None = None

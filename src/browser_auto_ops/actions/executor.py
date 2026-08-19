@@ -8,6 +8,7 @@ from playwright.async_api import Page
 from browser_auto_ops.errors import ElementNotFoundError, UnsafeActionError
 from browser_auto_ops.safety import confirmation_reason
 from browser_auto_ops.schemas import ActionRequest, ActionResult, ElementRect, PageState, StateElement
+from browser_auto_ops.snapshot.resolve import resolve_element
 
 
 class ActionExecutor:
@@ -24,17 +25,17 @@ class ActionExecutor:
 
     async def _dispatch(self, page: Page, state: PageState, request: ActionRequest) -> ActionResult:
         handlers = {
-            "click": lambda: self._click(page, _element(state, request.index)),
-            "input_text": lambda: self._input(page, _element(state, request.index), request.text or ""),
+            "click": lambda: self._click(page, _element(state, request)),
+            "input_text": lambda: self._input(page, _element(state, request), request.text or ""),
             "select_option": lambda: self._select(
                 page,
-                _element(state, request.index),
+                _element(state, request),
                 request.option or request.text or "",
             ),
-            "hover": lambda: self._hover(page, _element(state, request.index)),
+            "hover": lambda: self._hover(page, _element(state, request)),
             "scroll": lambda: self._scroll(page, request.direction or "down", request.amount or 500),
             "keypress": lambda: self._keypress(page, request),
-            "upload_file": lambda: self._upload(page, _element(state, request.index), request.file_path),
+            "upload_file": lambda: self._upload(page, _element(state, request), request.file_path),
             "execute_js": lambda: self._execute_js(page, request),
             "screenshot": lambda: self._screenshot(page, request),
             "goto_url": lambda: self._goto_url(page, request),
@@ -82,6 +83,8 @@ class ActionExecutor:
         return ActionResult(type=request.type, success=True, message="stable")
 
     async def _click(self, page: Page, element: StateElement) -> ActionResult:
+        if element.occluded:
+            raise ElementNotFoundError("element is occluded; handle the covering element and run `bao state` again")
         fresh_rect = await _fresh_action_rect(page, element)
         if fresh_rect and element.frame_index == 0:
             x = fresh_rect.x + fresh_rect.width / 2
@@ -179,20 +182,15 @@ async def wait_stable(page: Page, timeout_ms: int = 5_000) -> None:
     await page.wait_for_timeout(300)
 
 
-def _element(state: PageState, index: int | None) -> StateElement:
-    if index is None:
-        raise ElementNotFoundError("action requires index")
-    for element in state.elements:
-        if element.index == index:
-            return element
-    raise ElementNotFoundError(f"element index {index} not found in current state")
+def _element(state: PageState, request: ActionRequest) -> StateElement:
+    return resolve_element(state, request)
 
 
 def _request_element(state: PageState, request: ActionRequest) -> StateElement | None:
-    if request.index is None:
+    if request.index is None and request.ref is None and request.match is None:
         return None
     try:
-        return _element(state, request.index)
+        return _element(state, request)
     except ElementNotFoundError:
         return None
 

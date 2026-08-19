@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import urldefrag
 
 from playwright.async_api import Page
 
@@ -240,7 +241,7 @@ DOM_SCANNER = r"""
 
 
 class SnapshotEngine:
-    async def capture(self, page: Page, session_id: str) -> PageState:
+    async def capture(self, page: Page, session_id: str, previous: PageState | None = None) -> PageState:
         elements: list[StateElement] = []
         for frame_index, frame in enumerate(page.frames):
             try:
@@ -252,9 +253,10 @@ class SnapshotEngine:
                 if element:
                     elements.append(element)
         elements.sort(key=lambda item: (0 if item.modal else 1, item.rect.y if item.rect else 0))
+        refs = _reuse_refs(elements, previous, str(page.url or ""))
         for index, element in enumerate(elements, start=1):
             element.index = index
-            element.ref = f"@e{index}"
+            element.ref = refs.get(id(element)) or f"@e{index}"
         title = await page.title()
         viewport = page.viewport_size or {}
         return PageState(
@@ -264,6 +266,51 @@ class SnapshotEngine:
             viewport=viewport,
             elements=elements,
         )
+
+
+def _reuse_refs(elements: list[StateElement], previous: PageState | None, current_url: str) -> dict[int, str]:
+    if not previous or _url_without_hash(previous.url) != _url_without_hash(current_url):
+        return {}
+    previous_by_key: dict[tuple[str, str], list[StateElement]] = {}
+    max_ref = 0
+    for element in previous.elements:
+        parsed = _ref_number(element.ref)
+        if parsed:
+            max_ref = max(max_ref, parsed)
+        key = _stable_key(element)
+        if key[0]:
+            previous_by_key.setdefault(key, []).append(element)
+    assigned: dict[int, str] = {}
+    used: set[str] = set()
+    next_ref = max(max_ref, len(previous.elements)) + 1
+    for element in elements:
+        matches = previous_by_key.get(_stable_key(element), [])
+        if len(matches) == 1 and matches[0].ref and matches[0].ref not in used:
+            assigned[id(element)] = matches[0].ref
+            used.add(matches[0].ref)
+            continue
+        while f"@e{next_ref}" in used:
+            next_ref += 1
+        assigned[id(element)] = f"@e{next_ref}"
+        used.add(assigned[id(element)])
+        next_ref += 1
+    return assigned
+
+
+def _stable_key(element: StateElement) -> tuple[str, str]:
+    locator = element.action_locator or element.locator
+    return (locator.value if locator else "", element.frame_url or "")
+
+
+def _ref_number(ref: str | None) -> int | None:
+    if not ref:
+        return None
+    value = ref.lower().removeprefix("@e").removeprefix("e")
+    return int(value) if value.isdigit() else None
+
+
+def _url_without_hash(url: str) -> str:
+    return urldefrag(url or "")[0]
 
 
 def _to_element(

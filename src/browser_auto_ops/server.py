@@ -1,19 +1,27 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any
 import asyncio
 
 from fastapi import FastAPI, HTTPException
 
+from browser_auto_ops import __version__
 from browser_auto_ops.browsers import BrowserStore, provider_config_for_browser
-from browser_auto_ops.config import ensure_data_dirs
+from browser_auto_ops.config import ensure_data_dirs, project_data_dir
 from browser_auto_ops.downloads import DownloadManager
 from browser_auto_ops.forge import ForgeEngine
+from browser_auto_ops.forge.api_scripts import compact_network
+from browser_auto_ops.forge.engine import load_trace_summary
+from browser_auto_ops.forge.replay import load_workflow, workflow_actions
+from browser_auto_ops.forge.tester import evaluate_skill
 from browser_auto_ops.intelligence import ActService, ExtractService, ObserveService
+from browser_auto_ops.network import to_har
 from browser_auto_ops.safety import is_dangerous_text
 from browser_auto_ops.schemas import ActionRequest, BrowserIdentity, BrowserSession, ProviderConfig
 from browser_auto_ops.sessions import SessionManager, SessionStore
+from browser_auto_ops.sessions.payload import compact_action_payload
 
 app = FastAPI(title="browser-auto-ops", version="0.1.0")
 manager = SessionManager()
@@ -24,7 +32,15 @@ download_manager = DownloadManager()
 
 @app.get("/health")
 async def health() -> dict[str, Any]:
-    return {"ok": True, "sessions": len(manager.sessions)}
+    return {
+        "ok": True,
+        "sessions": len(manager.sessions),
+        "data_root": str(project_data_dir()),
+        "cwd": str(Path.cwd()),
+        "version": __version__,
+        "import_path": str(Path(__file__).resolve()),
+        "python": __import__("sys").version.split()[0],
+    }
 
 
 @app.get("/browsers")
@@ -48,8 +64,8 @@ async def delete_browser(browser_id_or_name: str) -> dict[str, Any]:
     return deleted.model_dump(mode="json")
 
 
-@app.post("/browsers/{browser_id_or_name}/open", response_model=BrowserSession)
-async def open_browser(browser_id_or_name: str, payload: dict[str, Any]) -> BrowserSession:
+@app.post("/browsers/{browser_id_or_name}/open")
+async def open_browser(browser_id_or_name: str, payload: dict[str, Any]) -> dict[str, Any]:
     browser = browser_store.get(browser_id_or_name)
     if not browser:
         raise HTTPException(status_code=404, detail="browser not found")
@@ -63,7 +79,8 @@ async def open_browser(browser_id_or_name: str, payload: dict[str, Any]) -> Brow
         session.name = str(payload.get("session") or payload.get("session_name") or "")
         session.browser_id = browser.browser_id
         session_store.save(session)
-        return session
+        observe = await _page_observe(manager.sessions[session.session_id].connection.page)
+        return {"session": session.model_dump(mode="json"), **observe}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -105,13 +122,37 @@ async def get_state(session_id: str) -> dict[str, Any]:
 
 
 @app.post("/sessions/{session_id}/actions")
-async def run_action(session_id: str, request: ActionRequest) -> dict[str, Any]:
+async def run_action(session_id: str, request: ActionRequest, include_state: bool = False) -> dict[str, Any]:
     try:
         result, state = await manager.action(_session_id(session_id), request)
-        return {
-            "result": result.model_dump(mode="json"),
-            "state": state.model_dump(mode="json") if state else None,
-        }
+        return compact_action_payload(result, state, include_state=include_state)
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@app.post("/sessions/{session_id}/batch")
+async def run_batch(session_id: str, payload: dict[str, Any] | list[dict[str, Any]]) -> dict[str, Any]:
+    try:
+        include_state = bool(payload.get("include_state")) if isinstance(payload, dict) else False
+        bail = bool(payload.get("bail")) if isinstance(payload, dict) else False
+        raw_actions = payload.get("actions") if isinstance(payload, dict) else payload
+        if not isinstance(raw_actions, list):
+            raise ValueError("batch payload must be a list or {actions: [...]}")
+        resolved = _session_id(session_id)
+        results: list[dict[str, Any]] = []
+        ok = True
+        for idx, raw in enumerate(raw_actions, start=1):
+            request = ActionRequest.model_validate(raw)
+            result, state = await manager.action(resolved, request)
+            item = compact_action_payload(result, state, include_state=include_state)
+            item["step"] = idx
+            item["success"] = bool(result.success)
+            results.append(item)
+            if not result.success:
+                ok = False
+                if bail:
+                    break
+        return {"ok": ok, "results": results}
     except Exception as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
@@ -181,6 +222,13 @@ async def network_clear(session_id: str) -> dict[str, Any]:
     return {"cleared": cleared}
 
 
+@app.get("/sessions/{session_id}/network/har")
+async def network_har(session_id: str, type: str | None = None, filter: str | None = None) -> dict[str, Any]:
+    resource_types = type.split(",") if type else None
+    items = manager.network_requests(_session_id(session_id), filter_text=filter, resource_types=resource_types)
+    return to_har(items)
+
+
 @app.get("/sessions/{session_id}/downloads")
 async def downloads(session_id: str) -> list[dict[str, Any]]:
     resolved = _session_id(session_id)
@@ -212,14 +260,108 @@ async def downloads_wait(session_id: str, payload: dict[str, Any]) -> dict[str, 
     return record.model_dump(mode="json")
 
 
+@app.get("/sessions/{session_id}/trace")
+async def session_trace(session_id: str) -> dict[str, Any]:
+    managed = _managed(session_id)
+    network = compact_network([item.model_dump(mode="json") for item in manager.network_requests(_session_id(session_id), resource_types=["xhr", "fetch"])])
+    managed.trace.save_json("network", "snapshot.json", network)
+    summary = load_trace_summary(managed.trace.root)
+    return {
+        "trace_dir": str(managed.trace.root),
+        "events": summary.get("events", 0),
+        "event_types": summary.get("event_types", {}),
+        "network": network,
+    }
+
+
+@app.post("/sessions/{session_id}/forge/explore")
+async def forge_explore_session(session_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+    managed = _managed(session_id)
+    goal = str(payload.get("goal") or "")
+    page_state = await manager.state(_session_id(session_id))
+    managed.trace.event("forge.explore", {"goal": goal, "state": page_state})
+    return {"trace_dir": str(managed.trace.root), "goal": goal, "url": page_state.url, "title": page_state.title}
+
+
 @app.post("/forge/jobs")
+@app.post("/forge/generate")
 async def forge_job(payload: dict[str, Any]) -> dict[str, Any]:
-    trace = Path(payload["trace"])
+    session_ref = payload.get("session")
+    if session_ref:
+        managed = _managed(str(session_ref))
+        network = compact_network(
+            [item.model_dump(mode="json") for item in manager.network_requests(_session_id(str(session_ref)), resource_types=["xhr", "fetch"])]
+        )
+        managed.trace.save_json("network", "snapshot.json", network)
+        trace = managed.trace.root
+        session_name = managed.session.name
+        browser_type = None
+    else:
+        trace = Path(payload["trace"])
+        network = None
+        session_name = payload.get("session_name")
+        browser_type = payload.get("browser_type")
     name = str(payload["name"])
     goal = payload.get("goal")
     root = ensure_data_dirs()
-    skill_path = ForgeEngine(root / "skills").generate(trace, name, goal)
-    return {"skill_path": str(skill_path)}
+    skill_path = ForgeEngine(root / "skills").generate(
+        trace,
+        name,
+        goal,
+        network=network,
+        session_name=session_name,
+        browser_type=browser_type,
+    )
+    return {"skill_path": str(skill_path), "generation_report": _read_generation_report(skill_path)}
+
+
+@app.post("/forge/test")
+async def forge_test_job(payload: dict[str, Any]) -> dict[str, Any]:
+    skill_dir = Path(payload["skill_dir"])
+    session_ref = payload.get("session")
+    replay = bool(payload.get("replay"))
+    live = None
+    state = None
+    replay_result = None
+    if replay and not session_ref:
+        return {"ok": False, "skill_dir": str(skill_dir), "checks": [{"name": "replay", "ok": False, "reason": "--replay requires session"}]}
+    if session_ref:
+        try:
+            managed = _managed(str(session_ref))
+            if replay:
+                replay_result = await _replay_workflow(skill_dir, managed.session.session_id)
+            live = await _page_observe(managed.connection.page)
+            state = (await manager.state(managed.session.session_id)).model_dump(mode="json")
+        except Exception:
+            live = None
+    result = evaluate_skill(skill_dir, live=live, state=state)
+    if replay_result is not None:
+        replay_ok = bool(replay_result.get("ok"))
+        result["checks"].append({"name": "replay", "ok": replay_ok, "result": replay_result})
+        result["ok"] = bool(result.get("ok")) and replay_ok
+    return result
+
+
+async def _replay_workflow(skill_dir: Path, session_id: str) -> dict[str, Any]:
+    try:
+        managed = manager.sessions[session_id]
+        live = await _page_observe(managed.connection.page)
+        actions = workflow_actions(load_workflow(skill_dir), live=live)
+    except Exception as exc:
+        return {"ok": False, "reason": str(exc), "results": []}
+    results: list[dict[str, Any]] = []
+    ok = True
+    for idx, raw in enumerate(actions, start=1):
+        request = ActionRequest.model_validate(raw)
+        result, state = await manager.action(session_id, request)
+        item = compact_action_payload(result, state, include_state=False)
+        item["step"] = idx
+        item["success"] = bool(result.success)
+        results.append(item)
+        if not result.success:
+            ok = False
+            break
+    return {"ok": ok, "results": results}
 
 
 def _session_id(session_ref: str) -> str:
@@ -236,6 +378,40 @@ def _session_id(session_ref: str) -> str:
 
 def _managed(session_ref: str):
     return manager.sessions[_session_id(session_ref)]
+
+
+def _read_generation_report(skill_path: Path) -> dict[str, Any]:
+    path = skill_path / "evidence" / "generation-report.json"
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+async def _page_observe(page) -> dict[str, str]:
+    url = str(getattr(page, "url", "") or "")
+    title = ""
+    getter = getattr(page, "title", None)
+    if callable(getter):
+        try:
+            title = str(await getter())
+        except Exception:
+            title = ""
+    return {"url": url, "title": title}
+
+
+def _checkpoint_from_verification(verification: dict[str, Any] | None) -> dict[str, Any]:
+    payload = verification or {}
+    after = payload.get("after") if isinstance(payload.get("after"), dict) else {}
+    return {
+        "url": after.get("url"),
+        "title": after.get("title"),
+        "url_changed": bool(payload.get("url_changed")),
+        "title_changed": bool(payload.get("title_changed")),
+    }
 
 
 async def _latest_export_href(page) -> str | None:

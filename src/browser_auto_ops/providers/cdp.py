@@ -36,7 +36,14 @@ class GenericCdpProvider:
     async def _connect(self, cdp_url: str, timeout_ms: int) -> BrowserConnection:
         try:
             playwright = await async_playwright().start()
-            browser = await playwright.chromium.connect_over_cdp(cdp_url, timeout=timeout_ms)
+            # AdsPower/Chrome already own download settings. Playwright's default
+            # connect_over_cdp calls Browser.setDownloadBehavior and turns Wayfair's
+            # client-side blob CSV into a UUID file with no extension.
+            browser = await playwright.chromium.connect_over_cdp(
+                cdp_url,
+                timeout=timeout_ms,
+                no_defaults=True,
+            )
             context, page = await first_page(browser)
             return BrowserConnection(
                 playwright=playwright,

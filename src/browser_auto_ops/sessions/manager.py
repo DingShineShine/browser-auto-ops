@@ -21,6 +21,7 @@ from browser_auto_ops.schemas import (
     ProviderConfig,
 )
 from browser_auto_ops.snapshot import SnapshotEngine
+from browser_auto_ops.snapshot.resolve import resolve_action_request
 from browser_auto_ops.trace import TraceRecorder
 
 
@@ -31,6 +32,7 @@ class ManagedSession:
     trace: TraceRecorder
     network: NetworkRecorder
     last_state: PageState | None = None
+    network_archive: list[NetworkRequestInfo] | None = None
 
 
 @dataclass
@@ -105,7 +107,7 @@ class SessionManager:
         managed = self._managed(session_id)
         self._sync_session_from_connection(managed)
         previous = managed.last_state
-        state = await self.snapshot.capture(managed.connection.page, session_id)
+        state = await self.snapshot.capture(managed.connection.page, session_id, previous=previous)
         _mark_changed_elements(previous, state)
         managed.last_state = state
         managed.trace.event("state.capture", state)
@@ -116,6 +118,10 @@ class SessionManager:
         managed = self._managed(session_id)
         before_state = managed.last_state or await self.state(session_id)
         before_facts = await self._connection_facts(managed.connection)
+        try:
+            request = resolve_action_request(before_state, request)
+        except Exception:
+            pass
         managed.trace.event("action.request", request)
         result = await self.executor.execute(managed.connection.page, before_state, request)
         if request.type not in {"screenshot", "execute_js", "extract"}:
@@ -144,15 +150,20 @@ class SessionManager:
         resource_types: list[str] | None = None,
     ) -> list[NetworkRequestInfo]:
         managed = self._managed(session_id)
-        return managed.network.list(filter_text=filter_text, resource_types=resource_types)
+        self._archive_network(managed)
+        return _filter_network(managed.network_archive or [], filter_text=filter_text, resource_types=resource_types)
 
     def network_request(self, session_id: str, request_id: str) -> NetworkRequestInfo | None:
         managed = self._managed(session_id)
-        return managed.network.get(request_id)
+        self._archive_network(managed)
+        return next((item for item in (managed.network_archive or []) if item.request_id == request_id), None)
 
     def network_clear(self, session_id: str) -> int:
         managed = self._managed(session_id)
-        return managed.network.clear()
+        count = len(managed.network_archive or []) + managed.network.clear()
+        managed.network_archive = []
+        managed.trace.event("network.clear", {"cleared": count})
+        return count
 
     async def _register(self, session: BrowserSession, connection: BrowserConnection) -> None:
         trace = TraceRecorder(self.data_root, session.session_id)
@@ -163,6 +174,7 @@ class SessionManager:
             connection=connection,
             trace=trace,
             network=network,
+            network_archive=[],
         )
         self._sync_session_from_connection(self.sessions[session.session_id])
 
@@ -180,9 +192,24 @@ class SessionManager:
         except Exception:
             pass
         if switched:
+            self._archive_network(managed)
             managed.network = NetworkRecorder(managed.connection.page)
             await managed.network.enable()
         self._sync_session_from_connection(managed)
+
+    def _archive_network(self, managed: ManagedSession) -> None:
+        archive = managed.network_archive
+        if archive is None:
+            archive = []
+            managed.network_archive = archive
+        by_id = {item.request_id: idx for idx, item in enumerate(archive)}
+        for item in managed.network.list(resource_types=["xhr", "fetch"]):
+            if item.request_id in by_id:
+                archive[by_id[item.request_id]] = item
+                continue
+            archive.append(item)
+            by_id[item.request_id] = len(archive) - 1
+            managed.trace.event("network.request", _compact_network_event(item))
 
     async def _adopt_new_page_if_needed(self, managed: ManagedSession, before: PageFacts) -> bool:
         connection = managed.connection
@@ -360,3 +387,31 @@ def _find_matching_after_element(before: Any, after: PageState):
         if before.action_locator and element.action_locator and element.action_locator.value == before.action_locator.value:
             return element
     return None
+
+
+def _filter_network(
+    items: list[NetworkRequestInfo],
+    *,
+    filter_text: str | None = None,
+    resource_types: list[str] | None = None,
+) -> list[NetworkRequestInfo]:
+    rows = list(items)
+    if filter_text:
+        rows = [item for item in rows if filter_text in item.url]
+    if resource_types:
+        allowed = {item.lower() for item in resource_types}
+        rows = [item for item in rows if (item.resource_type or "").lower() in allowed]
+    return rows
+
+
+def _compact_network_event(item: NetworkRequestInfo) -> dict[str, Any]:
+    return {
+        "request_id": item.request_id,
+        "method": item.method,
+        "url": item.url,
+        "status": item.status,
+        "resource_type": item.resource_type,
+        "post_data": item.post_data,
+        "started_at": item.started_at.isoformat(),
+        "finished_at": item.finished_at.isoformat() if item.finished_at else None,
+    }

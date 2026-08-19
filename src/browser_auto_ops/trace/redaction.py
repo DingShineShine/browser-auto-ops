@@ -16,7 +16,8 @@ SENSITIVE_KEYS = {
     "csrf",
     "csrftoken",
     "验证码",
-    "verification",
+    "verification_code",
+    "verify_code",
     "code",
 }
 

@@ -6,9 +6,25 @@
 __pycache__/
 *.py[cod]
 .venv/
+.venv-py312/
 .env
 dist/
 build/
 *.egg-info/
+*.pyd
+*.so
+*.c
+cython_debug/
 page.png
 skills-lock.json
+
+# Local runtime artifacts. Anchor downloads/ so src/browser_auto_ops/downloads stays tracked.
+/downloads/
+/output/
+/tmp/
+*.har
+
+# Forge copies generated skills here for agent discovery; only the official core skill is versioned.
+.agents/skills/*
+!.agents/skills/browser-auto-ops/
+!.agents/skills/browser-auto-ops/**

@@ -400,7 +400,7 @@ def test_forge_generates_trace_informed_skill(tmp_path: Path) -> None:
     }
     (trace / "events.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
 
-    skill = ForgeEngine(tmp_path / "skills").generate(trace, "tt-orders", "extract orders")
+    skill = ForgeEngine(tmp_path / "skills").generate(trace, "tt-orders", "extract orders", install=False)
 
     assert (skill / "SKILL.md").exists()
     assert (skill / "scripts" / "capability.py").exists()

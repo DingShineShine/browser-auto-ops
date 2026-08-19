@@ -38,35 +38,84 @@ bao session close report
 
 ## Install For Desktop Agents
 
-This repository is private on the internal GitLab server. A BrowserAct-style
-public `Skill URL` only works when the target agent can authenticate to GitLab.
-If unauthenticated users open the GitLab tree URL, GitLab redirects to sign-in
-or returns 401/404.
+Runtime and Skill are split the same way as BrowserAct:
 
-Recommended private install flow:
+1. Install the CLI from the company GitLab Package Registry (private PyPI).
+2. Load the thin skill at `.agents/skills/browser-auto-ops`.
+3. Run `bao get-skills core` for the version-matched workflow.
 
 ```bash
-git clone ssh://git@git.shinebed.com.cn:2222/datagroup/browser-auto-ops.git
-cd browser-auto-ops
-uv tool install . --python 3.12 --force
+uv tool install browser-auto-ops --python 3.12 --index-url https://git.shinebed.com.cn/api/v4/projects/datagroup%2Fbrowser-auto-ops/packages/pypi/simple
 bao --help
+bao get-skills core
 ```
 
-Then install the skill from the checked-out directory:
+The index URL uses the GitLab project path `datagroup/browser-auto-ops`. Numeric
+Project ID is not required. If the registry is private, put a read token in
+`%USERPROFILE%\.netrc`:
 
 ```text
-.agents/skills/browser-auto-ops
+machine git.shinebed.com.cn
+login __token__
+password <deploy-or-project-access-token>
 ```
 
-If the agent supports authenticated GitLab tree URLs, use:
+Token scopes:
+
+- Install / Agent machines: `read_package_registry`
+- Publish: `write_package_registry`
+
+Do not clone this repository onto employee desktops just to get `bao`.
+
+Skill source for agents that accept a GitLab tree URL:
 
 ```text
 https://git.shinebed.com.cn/datagroup/browser-auto-ops/-/tree/main/.agents/skills/browser-auto-ops
 ```
 
-For a BrowserAct-like one-line install experience without authentication
-issues, publish `.agents/skills/browser-auto-ops` to a public or internal
-anonymous-readable skills repository.
+## Publish a wheel
+
+Package Registry lives on the GitLab project: Deploy -> Package Registry.
+Published artifacts are platform wheels only. Do not upload an sdist.
+
+```powershell
+$env:UV_PUBLISH_PASSWORD = "<project-access-token>"
+powershell -File scripts/publish_gitlab.ps1
+```
+
+Or use the manual `publish` job in `.gitlab-ci.yml` on a Windows runner.
+Build a Windows wheel (core modules compiled to `.pyd`, no sdist):
+
+```powershell
+uv venv --python 3.12 .venv-py312
+uv pip install --python .venv-py312 cython setuptools ziglang hatchling
+.\.venv-py312\Scripts\python.exe hatch_build.py
+uv build --wheel
+```
+
+MSVC is used when `cl.exe` is on PATH. Otherwise the hook links with `ziglang`
+(`x86_64-windows-gnu`). Do not upload an sdist.
+
+Compiled implementation modules in the wheel:
+
+- `snapshot.scanner`
+- `actions.executor`
+- `providers.chrome_direct`
+- `providers.raw_cdp`
+- `providers.adspower_cdp`
+- `sessions.manager`
+
+Cookies, ADS keys, downloads, and local `.bao/` state stay off the package.
+
+## Local development
+
+```bash
+uv sync --extra dev
+uv run pytest
+```
+
+`uv tool install .` builds a real wheel and needs the compiled `.pyd` files.
+Use `python hatch_build.py` first, or install the GitLab/private-index package.
 
 Run API server:
 

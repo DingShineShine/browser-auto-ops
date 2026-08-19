@@ -11,13 +11,19 @@ from typing import Any, Optional
 import httpx
 import typer
 
+from browser_auto_ops import __version__
 from browser_auto_ops.browsers import BrowserStore, provider_config_for_browser
 from browser_auto_ops.config import ensure_data_dirs
 from browser_auto_ops.forge import ForgeEngine
+from browser_auto_ops.forge.replay import load_workflow, workflow_actions
+from browser_auto_ops.forge.tester import evaluate_skill
 from browser_auto_ops.intelligence import ActService, ExtractService, ObserveService
+from browser_auto_ops.network import to_har
 from browser_auto_ops.safety import is_dangerous_text
-from browser_auto_ops.schemas import ActionRequest, BrowserIdentity, BrowserSession, PageState, ProviderConfig
+from browser_auto_ops.schemas import ActionRequest, BrowserIdentity, BrowserSession, ElementMatch, PageState, ProviderConfig
+from browser_auto_ops.snapshot.resolve import find_all
 from browser_auto_ops.sessions import SessionManager, SessionStore
+from browser_auto_ops.sessions.payload import checkpoint_from_verification, compact_action_payload
 
 app = typer.Typer(help="browser-auto-ops CLI")
 daemon_app = typer.Typer(help="Local daemon runtime")
@@ -90,21 +96,48 @@ def daemon_start(
         "--port",
         str(port),
     ]
+    env = os.environ.copy()
+    env["BAO_HOME"] = str(root)
     process = subprocess.Popen(
         command,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
+        cwd=str(Path.cwd()),
+        env=env,
         creationflags=subprocess.CREATE_NO_WINDOW if os.name == "nt" else 0,
     )
     local_url = f"{'http'}://{host}:{port}"
-    pid_path.write_text(json.dumps({"pid": process.pid, "url": local_url}, ensure_ascii=False, indent=2), encoding="utf-8")
-    _echo({"ok": True, "pid": process.pid, "url": local_url}, force_json=True)
+    pid_path.write_text(
+        json.dumps({"pid": process.pid, "url": local_url, "data_root": str(root)}, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+    _echo({"ok": True, "pid": process.pid, "url": local_url, "data_root": str(root)}, force_json=True)
 
 
 @daemon_app.command("status")
 def daemon_status() -> None:
     health = _daemon_request("GET", "/health", required=False)
-    _echo({"running": bool(health), "health": health}, force_json=True)
+    local = str(ensure_data_dirs())
+    remote = (health or {}).get("data_root") if isinstance(health, dict) else None
+    cli_runtime = _runtime_metadata()
+    server_import = (health or {}).get("import_path") if isinstance(health, dict) else None
+    warnings = []
+    if server_import and not _paths_equal(Path(server_import).parent, Path(__file__).resolve().parent):
+        warnings.append("CLI and daemon are imported from different package paths; restart daemon or reinstall PATH bao")
+    if remote and not _paths_equal(remote, local):
+        warnings.append(_data_root_mismatch_message())
+    _echo(
+        {
+            "running": bool(health),
+            "health": health,
+            "cli": cli_runtime,
+            "data_root": remote or local,
+            "local_data_root": local,
+            "data_root_mismatch": bool(remote) and not _paths_equal(remote, local),
+            "warnings": warnings,
+        },
+        force_json=True,
+    )
 
 
 @daemon_app.command("stop")
@@ -208,17 +241,28 @@ def browser_create(
             remote_debugging_port=remote_debugging_port,
         ),
     )
+    if _daemon_same_home():
+        payload = _daemon_request("POST", "/browsers", identity.model_dump(mode="json"))
+        _echo(payload, force_json=True)
+        return
     BrowserStore().save(identity)
     _echo(identity.model_dump(mode="json"))
 
 
 @browser_app.command("list")
 def browser_list() -> None:
+    if _daemon_same_home():
+        _echo(_daemon_request("GET", "/browsers"), force_json=True)
+        return
     _echo([item.model_dump(mode="json") for item in BrowserStore().list()])
 
 
 @browser_app.command("delete")
 def browser_delete(browser_id_or_name: str) -> None:
+    if _daemon_same_home():
+        payload = _daemon_request("DELETE", f"/browsers/{browser_id_or_name}")
+        _echo(payload, force_json=True)
+        return
     deleted = BrowserStore().delete(browser_id_or_name)
     if not deleted:
         raise typer.BadParameter(f"browser not found: {browser_id_or_name}")
@@ -232,18 +276,20 @@ def browser_open(
     confirm: bool = typer.Option(False, "--confirm"),
 ) -> None:
     session_name = _session_name()
-    browser = BrowserStore().get(browser_id_or_name)
-    if not browser:
-        raise typer.BadParameter(f"browser not found: {browser_id_or_name}")
     if _daemon_available():
-        session = _daemon_request(
+        _require_matching_daemon()
+        payload = _daemon_request(
             "POST",
             f"/browsers/{browser_id_or_name}/open",
             {"url": url, "confirm": confirm, "session": session_name},
         )
-        SessionStore().save(BrowserSession.model_validate(session))
-        _echo(session, force_json=True)
+        session_payload = payload.get("session") if isinstance(payload, dict) and "session" in payload else payload
+        SessionStore().save(BrowserSession.model_validate(session_payload))
+        _echo(_open_result(session_payload, payload.get("url", ""), payload.get("title", "")), force_json=True)
         return
+    browser = BrowserStore().get(browser_id_or_name)
+    if not browser:
+        raise typer.BadParameter(f"browser not found: {browser_id_or_name}")
 
     async def _main() -> None:
         config = provider_config_for_browser(browser, start_url=url, confirm=confirm)
@@ -252,7 +298,8 @@ def browser_open(
         session.name = session_name
         session.browser_id = browser.browser_id
         SessionStore().save(session)
-        _echo(session.model_dump(mode="json"))
+        observe = await _observe_page(manager.sessions[session.session_id].connection.page)
+        _echo(_open_result(session.model_dump(mode="json"), observe.get("url", ""), observe.get("title", "")), force_json=True)
         await manager.sessions[session.session_id].connection.disconnect()
 
     run(_main())
@@ -354,72 +401,138 @@ def state(
 
 
 @app.command()
-def navigate(first: str, second: Optional[str] = typer.Argument(None), confirm: bool = typer.Option(False, "--confirm")) -> None:
+def navigate(
+    first: str,
+    second: Optional[str] = typer.Argument(None),
+    confirm: bool = typer.Option(False, "--confirm"),
+    full: bool = typer.Option(False, "--full"),
+) -> None:
     session_ref, url = _session_and_value(first, second, value_name="url")
-    _action(session_ref, ActionRequest(type="goto_url", url=url, require_confirm=confirm))
+    _action(session_ref, ActionRequest(type="goto_url", url=url, require_confirm=confirm), full=full)
 
 
 @app.command()
-def back(session_id: Optional[str] = typer.Argument(None)) -> None:
-    _action(_session_ref(session_id), ActionRequest(type="go_back"))
+def back(session_id: Optional[str] = typer.Argument(None), full: bool = typer.Option(False, "--full")) -> None:
+    _action(_session_ref(session_id), ActionRequest(type="go_back"), full=full)
 
 
 @app.command()
-def forward(session_id: Optional[str] = typer.Argument(None)) -> None:
-    _action(_session_ref(session_id), ActionRequest(type="go_forward"))
+def forward(session_id: Optional[str] = typer.Argument(None), full: bool = typer.Option(False, "--full")) -> None:
+    _action(_session_ref(session_id), ActionRequest(type="go_forward"), full=full)
 
 
 @app.command()
-def reload(session_id: Optional[str] = typer.Argument(None)) -> None:
-    _action(_session_ref(session_id), ActionRequest(type="reload"))
+def reload(session_id: Optional[str] = typer.Argument(None), full: bool = typer.Option(False, "--full")) -> None:
+    _action(_session_ref(session_id), ActionRequest(type="reload"), full=full)
 
 
 @app.command()
-def click(first: str, second: Optional[int] = typer.Argument(None), confirm: bool = typer.Option(False, "--confirm")) -> None:
-    session_ref, index = _session_and_int(first, second)
-    _action(session_ref, ActionRequest(type="click", index=index, require_confirm=confirm))
+def click(
+    first: Optional[str] = typer.Argument(None),
+    second: Optional[str] = typer.Argument(None),
+    confirm: bool = typer.Option(False, "--confirm"),
+    full: bool = typer.Option(False, "--full"),
+    role: Optional[str] = typer.Option(None, "--role"),
+    name: Optional[str] = typer.Option(None, "--name"),
+    text: Optional[str] = typer.Option(None, "--text"),
+    placeholder: Optional[str] = typer.Option(None, "--placeholder"),
+    within_role: Optional[str] = typer.Option(None, "--within-role"),
+    within_text: Optional[str] = typer.Option(None, "--within-text"),
+) -> None:
+    session_ref, target = _session_and_target(first, second)
+    match = _match(role=role, name=name, text=text, placeholder=placeholder, within_role=within_role, within_text=within_text)
+    _action(session_ref, _target_action("click", target, match=match, require_confirm=confirm), full=full)
 
 
 @app.command()
-def hover(first: str, second: Optional[int] = typer.Argument(None)) -> None:
-    session_ref, index = _session_and_int(first, second)
-    _action(session_ref, ActionRequest(type="hover", index=index))
+def hover(
+    first: Optional[str] = typer.Argument(None),
+    second: Optional[str] = typer.Argument(None),
+    full: bool = typer.Option(False, "--full"),
+    role: Optional[str] = typer.Option(None, "--role"),
+    name: Optional[str] = typer.Option(None, "--name"),
+    text: Optional[str] = typer.Option(None, "--text"),
+    placeholder: Optional[str] = typer.Option(None, "--placeholder"),
+    within_role: Optional[str] = typer.Option(None, "--within-role"),
+    within_text: Optional[str] = typer.Option(None, "--within-text"),
+) -> None:
+    session_ref, target = _session_and_target(first, second)
+    match = _match(role=role, name=name, text=text, placeholder=placeholder, within_role=within_role, within_text=within_text)
+    _action(session_ref, _target_action("hover", target, match=match), full=full)
 
 
 @app.command("input")
 def input_text(
     first: str,
-    second: str,
+    second: Optional[str] = typer.Argument(None),
     third: Optional[str] = typer.Argument(None),
     confirm: bool = typer.Option(False, "--confirm"),
+    full: bool = typer.Option(False, "--full"),
+    role: Optional[str] = typer.Option(None, "--role"),
+    name: Optional[str] = typer.Option(None, "--name"),
+    text_match: Optional[str] = typer.Option(None, "--text"),
+    placeholder: Optional[str] = typer.Option(None, "--placeholder"),
+    within_role: Optional[str] = typer.Option(None, "--within-role"),
+    within_text: Optional[str] = typer.Option(None, "--within-text"),
 ) -> None:
+    match = _match(role=role, name=name, text=text_match, placeholder=placeholder, within_role=within_role, within_text=within_text)
+    if match:
+        if second is None:
+            session_ref = _session_name()
+            text = first
+        else:
+            session_ref = first
+            text = second
+        _action(session_ref, ActionRequest(type="input_text", match=match, text=text, require_confirm=confirm), full=full)
+        return
+    if second is None:
+        raise typer.BadParameter("missing text; use --session <name> input TARGET TEXT or legacy SESSION TARGET TEXT")
     if third is None:
         session_ref = _session_name()
-        index = int(first)
+        target = first
         text = second
     else:
         session_ref = first
-        index = int(second)
+        target = second
         text = third
-    _action(session_ref, ActionRequest(type="input_text", index=index, text=text, require_confirm=confirm))
+    _action(session_ref, _target_action("input_text", target, text=text, require_confirm=confirm), full=full)
 
 
 @app.command()
 def select(
     first: str,
-    second: str,
+    second: Optional[str] = typer.Argument(None),
     third: Optional[str] = typer.Argument(None),
     confirm: bool = typer.Option(False, "--confirm"),
+    full: bool = typer.Option(False, "--full"),
+    role: Optional[str] = typer.Option(None, "--role"),
+    name: Optional[str] = typer.Option(None, "--name"),
+    text: Optional[str] = typer.Option(None, "--text"),
+    placeholder: Optional[str] = typer.Option(None, "--placeholder"),
+    within_role: Optional[str] = typer.Option(None, "--within-role"),
+    within_text: Optional[str] = typer.Option(None, "--within-text"),
 ) -> None:
+    match = _match(role=role, name=name, text=text, placeholder=placeholder, within_role=within_role, within_text=within_text)
+    if match:
+        if second is None:
+            session_ref = _session_name()
+            option = first
+        else:
+            session_ref = first
+            option = second
+        _action(session_ref, ActionRequest(type="select_option", match=match, option=option, require_confirm=confirm), full=full)
+        return
+    if second is None:
+        raise typer.BadParameter("missing option; use --session <name> select TARGET OPTION or legacy SESSION TARGET OPTION")
     if third is None:
         session_ref = _session_name()
-        index = int(first)
+        target = first
         option = second
     else:
         session_ref = first
-        index = int(second)
+        target = second
         option = third
-    _action(session_ref, ActionRequest(type="select_option", index=index, option=option, require_confirm=confirm))
+    _action(session_ref, _target_action("select_option", target, option=option, require_confirm=confirm), full=full)
 
 
 @app.command()
@@ -438,6 +551,51 @@ def scroll(
 
 
 @app.command()
+def batch(
+    path: Path,
+    session_id: Optional[str] = typer.Argument(None),
+    bail: bool = typer.Option(False, "--bail"),
+    full: bool = typer.Option(False, "--full"),
+) -> None:
+    session_ref = _session_ref(session_id)
+    raw = json.loads(path.read_text(encoding="utf-8"))
+    actions = raw.get("actions") if isinstance(raw, dict) else raw
+    if not isinstance(actions, list):
+        raise typer.BadParameter("batch file must be a JSON array or {actions: [...]}")
+    if _daemon_available():
+        payload = _daemon_request(
+            "POST",
+            f"/sessions/{session_ref}/batch",
+            {"actions": actions, "bail": bail, "include_state": full},
+        )
+        _echo(payload, force_json=True)
+        return
+
+    async def _main() -> None:
+        manager, attached_ref = await _attach(session_ref)
+        try:
+            results: list[dict[str, Any]] = []
+            ok = True
+            for idx, raw_action in enumerate(actions, start=1):
+                request = ActionRequest.model_validate(raw_action)
+                result, after_state = await manager.action(attached_ref, request)
+                _persist_attached(manager, attached_ref)
+                item = compact_action_payload(result, after_state, include_state=full)
+                item["step"] = idx
+                item["success"] = bool(result.success)
+                results.append(item)
+                if not result.success:
+                    ok = False
+                    if bail:
+                        break
+            _echo({"ok": ok, "results": results}, force_json=True)
+        finally:
+            await manager.sessions[attached_ref].connection.disconnect()
+
+    run(_main())
+
+
+@app.command()
 def keys(first: str, second: Optional[str] = typer.Argument(None), confirm: bool = typer.Option(False, "--confirm")) -> None:
     session_ref, key = _session_and_value(first, second, value_name="key")
     _action(session_ref, ActionRequest(type="keypress", key=key, require_confirm=confirm))
@@ -449,16 +607,32 @@ def upload(
     second: str,
     third: Optional[Path] = typer.Argument(None),
     confirm: bool = typer.Option(False, "--confirm"),
+    role: Optional[str] = typer.Option(None, "--role"),
+    name: Optional[str] = typer.Option(None, "--name"),
+    text: Optional[str] = typer.Option(None, "--text"),
+    placeholder: Optional[str] = typer.Option(None, "--placeholder"),
+    within_role: Optional[str] = typer.Option(None, "--within-role"),
+    within_text: Optional[str] = typer.Option(None, "--within-text"),
 ) -> None:
+    match = _match(role=role, name=name, text=text, placeholder=placeholder, within_role=within_role, within_text=within_text)
+    if match:
+        if third is None:
+            session_ref = _session_name()
+            file_path = Path(first)
+        else:
+            session_ref = first
+            file_path = third
+        _action(session_ref, ActionRequest(type="upload_file", match=match, file_path=file_path, require_confirm=confirm))
+        return
     if third is None:
         session_ref = _session_name()
-        index = int(first)
+        target = first
         file_path = Path(second)
     else:
         session_ref = first
-        index = int(second)
+        target = second
         file_path = third
-    _action(session_ref, ActionRequest(type="upload_file", index=index, file_path=file_path, require_confirm=confirm))
+    _action(session_ref, _target_action("upload_file", target, require_confirm=confirm).model_copy(update={"file_path": file_path}))
 
 
 @app.command("eval")
@@ -507,6 +681,43 @@ def wait(
         _wait_selector(session_ref, selector=selector, index_text=index_text, state=state, timeout_ms=timeout_ms)
         return
     raise typer.BadParameter("supported wait conditions: stable, selector")
+
+
+@app.command()
+def find(
+    session_id: Optional[str] = typer.Argument(None),
+    role: Optional[str] = typer.Option(None, "--role"),
+    name: Optional[str] = typer.Option(None, "--name"),
+    text: Optional[str] = typer.Option(None, "--text"),
+    placeholder: Optional[str] = typer.Option(None, "--placeholder"),
+    within_role: Optional[str] = typer.Option(None, "--within-role"),
+    within_text: Optional[str] = typer.Option(None, "--within-text"),
+) -> None:
+    match = _match(role=role, name=name, text=text, placeholder=placeholder, within_role=within_role, within_text=within_text)
+    if not match:
+        raise typer.BadParameter("provide --role, --name, --text, or --placeholder")
+    session_ref = _session_ref(session_id)
+
+    async def _main() -> None:
+        manager, attached_ref = await _attach(session_ref)
+        try:
+            page_state = await manager.state(attached_ref)
+            rows = [
+                {
+                    "index": item.index,
+                    "ref": item.ref,
+                    "kind": item.kind,
+                    "role": item.role,
+                    "name": item.name or item.text or item.placeholder,
+                    "text": item.text,
+                }
+                for item in find_all(page_state, match)
+            ]
+            _echo(rows, force_json=True)
+        finally:
+            await manager.sessions[attached_ref].connection.disconnect()
+
+    run(_main())
 
 
 @app.command()
@@ -726,6 +937,40 @@ def network_clear(session_id: Optional[str] = typer.Argument(None)) -> None:
     run(_main())
 
 
+@network_app.command("export")
+def network_export(
+    output: Path = typer.Option(..., "--output"),
+    session_id: Optional[str] = typer.Argument(None),
+    type: Optional[str] = typer.Option(None, "--type"),
+    filter: Optional[str] = typer.Option(None, "--filter"),
+) -> None:
+    session_ref = _session_ref(session_id)
+    if _daemon_available():
+        query = []
+        if type:
+            query.append(f"type={type}")
+        if filter:
+            query.append(f"filter={filter}")
+        suffix = ("?" + "&".join(query)) if query else ""
+        payload = _daemon_request("GET", f"/sessions/{session_ref}/network/har{suffix}")
+        output.write_text(json.dumps(payload or {"log": {"version": "1.2", "entries": []}}, ensure_ascii=False, indent=2), encoding="utf-8")
+        _echo({"ok": True, "path": str(output), "entries": len(((payload or {}).get("log") or {}).get("entries") or [])}, force_json=True)
+        return
+
+    async def _main() -> None:
+        manager, attached_ref = await _attach(session_ref)
+        try:
+            resource_types = type.split(",") if type else None
+            items = manager.network_requests(attached_ref, filter_text=filter, resource_types=resource_types)
+            payload = to_har(items)
+            output.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            _echo({"ok": True, "path": str(output), "entries": len(payload["log"]["entries"])}, force_json=True)
+        finally:
+            await manager.sessions[attached_ref].connection.disconnect()
+
+    run(_main())
+
+
 @network_har_app.command("start")
 def network_har_start(session_id: Optional[str] = typer.Argument(None)) -> None:
     _ = _session_ref(session_id)
@@ -933,48 +1178,109 @@ def downloads_save(
 
 @forge_app.command("explore")
 def forge_explore(session_id: str, goal: str = typer.Option(..., "--goal")) -> None:
-    async def _main() -> None:
-        manager, attached_ref = await _attach(session_id)
-        managed = manager.sessions[attached_ref]
-        try:
-            page_state = await manager.state(managed.session.session_id)
-            managed.trace.event("forge.explore", {"goal": goal, "state": page_state})
-            typer.echo(str(managed.trace.root))
-        finally:
-            await managed.connection.disconnect()
-
-    run(_main())
+    _require_matching_daemon()
+    payload = _daemon_request("POST", f"/sessions/{session_id}/forge/explore", {"goal": goal})
+    typer.echo((payload or {}).get("trace_dir") or "")
 
 
 @forge_app.command("generate")
-def forge_generate(trace: Path = typer.Option(..., "--trace"), name: str = typer.Option(..., "--name"), goal: Optional[str] = typer.Option(None, "--goal")) -> None:
+def forge_generate(
+    name: str = typer.Option(..., "--name"),
+    trace: Optional[Path] = typer.Option(None, "--trace"),
+    session: Optional[str] = typer.Option(None, "--session"),
+    goal: Optional[str] = typer.Option(None, "--goal"),
+) -> None:
+    if session and trace:
+        raise typer.BadParameter("use either --session or --trace, not both")
+    if not session and not trace:
+        raise typer.BadParameter("provide --session or --trace")
+    if session:
+        _require_matching_daemon()
+        payload = _daemon_request("POST", "/forge/generate", {"session": session, "name": name, "goal": goal})
+        _echo(payload, force_json=True)
+        return
     root = ensure_data_dirs()
-    path = ForgeEngine(root / "skills").generate(trace, name, goal)
-    typer.echo(str(path))
+    path = ForgeEngine(root / "skills").generate(trace, name, goal)  # type: ignore[arg-type]
+    _echo(_forge_generate_result(path), force_json=True)
 
 
 @forge_app.command("test")
-def forge_test(skill_dir: Path) -> None:
-    ok = (skill_dir / "SKILL.md").exists() and (skill_dir / "scripts" / "capability.py").exists()
-    _echo({"ok": ok, "skill_dir": str(skill_dir)}, force_json=True)
+def forge_test(
+    skill_dir: Path,
+    session: Optional[str] = typer.Option(None, "--session"),
+    replay: bool = typer.Option(False, "--replay"),
+) -> None:
+    if replay and not session:
+        _echo({"ok": False, "reason": "--replay requires --session"}, force_json=True)
+        raise typer.Exit(code=2)
+    if session:
+        _require_matching_daemon()
+        result = _daemon_request(
+            "POST",
+            "/forge/test",
+            {"skill_dir": str(skill_dir), "session": session, "replay": replay},
+        )
+        _echo(result, force_json=True)
+        if not (isinstance(result, dict) and result.get("ok")):
+            raise typer.Exit(code=1)
+        return
+    result = evaluate_skill(skill_dir)
+    _echo(result, force_json=True)
+    if not result.get("ok"):
+        raise typer.Exit(code=1)
+
+
+def _forge_live_payload(session: str) -> Any:
+    payload = _daemon_request(
+        "POST",
+        f"/sessions/{session}/actions",
+        ActionRequest(type="execute_js", script="({url: location.href, title: document.title})").model_dump(mode="json"),
+    )
+    live = ((payload or {}).get("result") or {}).get("data")
+    if not isinstance(live, str):
+        return live
+    try:
+        return json.loads(live)
+    except Exception:
+        return {"title": live}
+
+
+def _append_replay_check(result: dict[str, Any], replay_result: Any) -> None:
+    replay_ok = bool(replay_result.get("ok")) if isinstance(replay_result, dict) else False
+    result["checks"].append({"name": "replay", "ok": replay_ok, "result": replay_result})
+    result["ok"] = bool(result.get("ok")) and replay_ok
+
+
+def _forge_generate_result(skill_path: Path) -> dict[str, Any]:
+    report_path = skill_path / "evidence" / "generation-report.json"
+    report: dict[str, Any] = {}
+    if report_path.exists():
+        try:
+            loaded = json.loads(report_path.read_text(encoding="utf-8"))
+            if isinstance(loaded, dict):
+                report = loaded
+        except Exception:
+            report = {}
+    return {"skill_path": str(skill_path), "generation_report": report}
 
 
 @app.command("get-skills")
 def get_skills(name: str = typer.Argument("core"), skill_version: Optional[str] = typer.Option(None, "--skill-version")) -> None:
     _ = skill_version
-    if name not in {"core", "enterprise", "main", "chrome-direct", "ads", "safety"}:
-        raise typer.BadParameter("supported skill guides: core, enterprise, main, chrome-direct, ads, safety")
+    if name not in {"core", "enterprise", "main", "chrome-direct", "ads", "safety", "explore", "forge"}:
+        raise typer.BadParameter("supported skill guides: core, enterprise, main, chrome-direct, ads, safety, explore, forge")
     typer.echo(_skill_text(name))
 
 
-def _action(session_ref: str, request: ActionRequest) -> None:
+def _action(session_ref: str, request: ActionRequest, *, full: bool = False) -> None:
     if _daemon_available():
+        suffix = "?include_state=1" if full else ""
         payload = _daemon_request(
             "POST",
-            f"/sessions/{session_ref}/actions",
+            f"/sessions/{session_ref}/actions{suffix}",
             request.model_dump(mode="json"),
         )
-        _echo(payload, force_json=True)
+        _echo(_attach_checkpoint(payload), force_json=True)
         return
 
     async def _main() -> None:
@@ -982,10 +1288,7 @@ def _action(session_ref: str, request: ActionRequest) -> None:
         try:
             result, after_state = await manager.action(attached_ref, request)
             _persist_attached(manager, attached_ref)
-            payload: dict[str, Any] = {"result": result.model_dump(mode="json")}
-            if after_state:
-                payload["state"] = after_state.model_dump(mode="json")
-            _echo(payload, force_json=True)
+            _echo(compact_action_payload(result, after_state, include_state=full), force_json=True)
         finally:
             await manager.sessions[attached_ref].connection.disconnect()
 
@@ -1044,8 +1347,88 @@ def _daemon_request(
         return None
 
 
+def _daemon_health() -> dict[str, Any] | None:
+    payload = _daemon_request("GET", "/health", required=False, timeout=1.0)
+    return payload if isinstance(payload, dict) else None
+
+
 def _daemon_available() -> bool:
-    return _daemon_request("GET", "/health", required=False, timeout=1.0) is not None
+    return _daemon_health() is not None
+
+
+def _runtime_metadata() -> dict[str, Any]:
+    return {
+        "version": __version__,
+        "import_path": str(Path(__file__).resolve()),
+        "python": sys.version.split()[0],
+        "data_root": str(ensure_data_dirs()),
+    }
+
+
+def _paths_equal(left: str | Path, right: str | Path) -> bool:
+    try:
+        return Path(left).resolve() == Path(right).resolve()
+    except Exception:
+        return False
+
+
+def _daemon_same_home() -> bool:
+    health = _daemon_health()
+    if not health or not health.get("data_root"):
+        return False
+    return _paths_equal(str(health["data_root"]), ensure_data_dirs())
+
+
+def _data_root_mismatch_message() -> str:
+    health = _daemon_health() or {}
+    remote = health.get("data_root")
+    local = ensure_data_dirs()
+    return (
+        f"daemon data_root {remote} != current {local}; "
+        "stop the old daemon and run `bao daemon start` in this repo"
+    )
+
+
+def _require_matching_daemon() -> dict[str, Any]:
+    health = _daemon_health()
+    if not health:
+        raise typer.BadParameter("bao daemon is not running; run `bao daemon start` in this repo first")
+    remote = health.get("data_root")
+    if remote and not _paths_equal(str(remote), ensure_data_dirs()):
+        raise typer.BadParameter(_data_root_mismatch_message())
+    return health
+
+
+def _open_result(session_payload: dict[str, Any], url: str, title: str) -> dict[str, Any]:
+    return {"session": session_payload, "url": url, "title": title}
+
+
+def _checkpoint_from_verification(verification: dict[str, Any] | None) -> dict[str, Any]:
+    return checkpoint_from_verification(verification)
+
+
+def _attach_checkpoint(payload: Any) -> Any:
+    if not isinstance(payload, dict):
+        return payload
+    result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
+    checkpoint = payload.get("checkpoint")
+    if not isinstance(checkpoint, dict):
+        checkpoint = _checkpoint_from_verification(result.get("verification") if isinstance(result, dict) else None)
+    attached = dict(payload)
+    attached["checkpoint"] = checkpoint
+    return attached
+
+
+async def _observe_page(page) -> dict[str, str]:
+    url = str(getattr(page, "url", "") or "")
+    title = ""
+    getter = getattr(page, "title", None)
+    if callable(getter):
+        try:
+            title = str(await getter())
+        except Exception:
+            title = ""
+    return {"url": url, "title": title}
 
 
 def _session_name() -> str:
@@ -1063,6 +1446,60 @@ def _session_and_int(first: str, second: int | None) -> tuple[str, int]:
     if second is None:
         return _session_name(), int(first)
     return first, int(second)
+
+
+def _session_and_target(first: str | None, second: str | None) -> tuple[str, str | None]:
+    if second is None:
+        if _ctx.get("session"):
+            return _session_name(), first
+        if first is None:
+            raise typer.BadParameter("missing target; use --session <name> or legacy SESSION TARGET")
+        return _session_name(), first
+    if first is None:
+        raise typer.BadParameter("missing session")
+    return first, second
+
+
+def _match(
+    *,
+    role: str | None = None,
+    name: str | None = None,
+    text: str | None = None,
+    placeholder: str | None = None,
+    within_role: str | None = None,
+    within_text: str | None = None,
+) -> ElementMatch | None:
+    if not any([role, name, text, placeholder, within_role, within_text]):
+        return None
+    return ElementMatch(
+        role=role,
+        name=name,
+        text=text,
+        placeholder=placeholder,
+        within_role=within_role,
+        within_text=within_text,
+    )
+
+
+def _target_action(
+    action_type: str,
+    target: str | None,
+    *,
+    match: ElementMatch | None = None,
+    text: str | None = None,
+    option: str | None = None,
+    require_confirm: bool = False,
+) -> ActionRequest:
+    payload: dict[str, Any] = {"type": action_type, "text": text, "option": option, "require_confirm": require_confirm}
+    if match:
+        payload["match"] = match
+    elif target and target.lower().lstrip("@").startswith("e"):
+        payload["ref"] = target
+    elif target:
+        payload["index"] = int(target)
+    else:
+        raise typer.BadParameter("target or semantic match is required")
+    return ActionRequest.model_validate(payload)
 
 
 def _session_and_value(first: str, second: str | None, *, value_name: str) -> tuple[str, str]:
@@ -1189,6 +1626,71 @@ def _chrome_direct_exists(store: BrowserStore) -> bool:
 
 
 def _skill_text(name: str) -> str:
+    if name == "explore":
+        return """# browser-auto-ops explore
+
+Use existing observation commands. Do not invent login classifiers or site-specific click fallbacks.
+
+After `bao --session <name> browser open <browser> <url> --confirm`, read the returned `url` and `title`. If you need them again:
+
+```bash
+bao --session <name> get title
+```
+
+When the page changed or indexes may be stale:
+
+```bash
+bao --session <name> wait stable
+bao --session <name> state
+bao --session <name> screenshot --output .bao/screenshots/explore.png
+```
+
+Indexes from `state` are temporary. Re-run `state` after navigation or DOM changes. `@eN` refs are also snapshot handles, though same-page rescans may preserve them when the xpath is still unique. Use `click @e12`, or strict semantic matching:
+
+```bash
+bao --session <name> click @e12
+bao --session <name> click --role button --name "Export All"
+bao --session <name> find --role button --name "Export"
+```
+
+To inspect traffic, first list real XHR/fetch URLs, then narrow with a URL substring that appeared in the result. `--filter` currently matches URL text only; it does not search request bodies, GraphQL operation names, or response payloads. There is no `network har` capture subcommand; `network export` writes a HAR from the session archive:
+
+```bash
+bao --session <name> network requests --type xhr,fetch
+bao --session <name> network requests --type xhr,fetch --filter <url-substring-from-results>
+bao --session <name> network export --output .bao/network.har --type xhr,fetch
+```
+
+Useful wait options:
+
+```bash
+bao --session <name> wait stable
+bao --session <name> wait selector 3 --state visible --timeout 8000
+bao --session <name> wait selector --selector "button" --state visible
+```
+
+Click/input results default to a compact payload: `result` plus `checkpoint.url`, `checkpoint.title`, `checkpoint.url_changed`, and `checkpoint.title_changed`. They do not include the element list; use `bao state` when you need elements, and always state again when `checkpoint.state_stale` is true. Use `--full` only when you need the old full payload.
+"""
+    if name == "forge":
+        return """# browser-auto-ops forge
+
+Describe → Explore → Generate → Self-test.
+
+1. Confirm `bao daemon status` `data_root` is this repository's `.bao`. If it is not, stop the old daemon and run `bao daemon start` here.
+2. Keep using the same named session for every click/input/wait so actions land in one `events.jsonl`.
+3. Generate from that session. Do not create a second sparse trace with a late `forge explore` as the only evidence.
+
+```bash
+bao forge generate --session <name> --name <skill-name> --goal "the user goal"
+bao forge test .bao/skills/<skill-name> --session <name>
+bao forge test .bao/skills/<skill-name> --session <name> --replay
+```
+
+4. If `forge test --session` passes, do not re-explore by default. Replay the generated `.agents/skills/<skill-name>` copy. Use `--replay` before business-critical reuse; it clicks through locators and stops on first failure without rewriting the Skill.
+5. Login and other account-changing actions need `--confirm`. Do not commit passwords, cookies, or Ads profile ids.
+
+`bao forge test` must pass replay/locator/success-criteria checks. A `SKILL.md` plus `capability.py` existing is not enough.
+"""
     if name == "chrome-direct":
         return """# browser-auto-ops chrome-direct
 
@@ -1231,12 +1733,25 @@ Safety rules:
 - Treat cookies, auth headers, passwords, verification codes, and AdsPower profile identifiers as sensitive.
 """
     variant = "enterprise" if name == "enterprise" else "core"
+    runtime = _runtime_metadata()
     return f"""# browser-auto-ops {variant}
 
 Use `bao` as a BrowserAct-style enterprise browser CLI. Public browser types are only:
 
 - `chrome-direct`: controls the employee's current local Chrome. Requires explicit confirmation before use.
 - `ads`: controls an AdsPower/ADS profile, preferably through the VPS-side browser-auto-ops sidecar.
+
+For a first-pass exploration, also run `bao get-skills explore`.
+For a reusable workflow, run `bao get-skills forge` after the session has recorded actions.
+
+Current CLI runtime:
+
+- version: `{runtime["version"]}`
+- import path: `{runtime["import_path"]}`
+- python: `{runtime["python"]}`
+- data_root: `{runtime["data_root"]}`
+
+When developing from a checked-out repository, prefer `uv run bao ...`. A PATH `bao.exe` installed by `uv tool` is a snapshot; refresh it with `uv tool install --force --python 3.12 <repo-or-package>` after code changes.
 
 Core workflow:
 
@@ -1247,8 +1762,10 @@ bao browser create --type chrome-direct --name local --desc "Employee current Ch
 bao browser create --type ads --name amazon-us-01 --desc "VPS AdsPower profile" --ads-base-url http://HOST:PORT --ads-user-id PROFILE_ID
 bao --session task-name browser open <browser_id_or_name> https://example.com --confirm
 bao --session task-name state
-bao --session task-name click 3
+bao --session task-name click @e3
+bao --session task-name click --role button --name "Search"
 bao --session task-name input 1 "keyword"
+bao --session task-name batch actions.json --bail
 bao --session task-name wait stable
 bao --session task-name get title
 bao --session task-name get markdown
@@ -1256,6 +1773,7 @@ bao --session task-name tab list
 bao --session task-name cookies get
 bao --session task-name wait selector 3 --state visible
 bao --session task-name network requests --type xhr,fetch --filter /api/
+bao --session task-name network export --output .bao/network.har --type xhr,fetch
 bao --session task-name downloads wait latest --output D:\\exports
 bao session close task-name
 ```
@@ -1263,10 +1781,10 @@ bao session close task-name
 Important rules:
 
 - Run `bao daemon start` before `chrome-direct` work. Without daemon, fallback reconnect mode may trigger Chrome's remote-debugging permission dialog repeatedly.
-- Re-run `bao --session <name> state` after navigation or DOM changes; indexes are temporary.
+- Re-run `bao --session <name> state` after navigation or DOM changes; indexes and `@eN` refs are snapshot handles. Same-page rescans may preserve refs, but never write index/ref into generated skills.
 - Use `chrome-direct` only when the task needs live local Chrome cookies, extensions, certificates, or SSO.
 - Use `ads` for company-managed AdsPower browser profiles on the VPS.
 - Do not expose raw CDP ports publicly.
 - Do not auto-submit payment, delete, publish, approval, or account-changing operations. Use `--confirm` only after explicit user approval.
-- Unsupported BrowserAct commands in this version: `stealth-extract`, `solve-captcha`, `remote-assist`, `network har`, browser profile import, and stealth browser creation.
+- Unsupported BrowserAct commands in this version: `stealth-extract`, `solve-captcha`, `remote-assist`, browser profile import, and stealth browser creation.
 """
