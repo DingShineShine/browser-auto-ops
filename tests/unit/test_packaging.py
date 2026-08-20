@@ -9,16 +9,7 @@ from browser_auto_ops.sessions import manager
 from browser_auto_ops.snapshot import scanner
 
 
-def test_core_implementation_modules_import() -> None:
-    assert scanner.SnapshotEngine is not None or hasattr(scanner, "DOM_SCANNER")
-    assert hasattr(executor, "ActionExecutor")
-    assert hasattr(chrome_direct, "ChromeDirectProvider")
-    assert hasattr(raw_cdp, "connect_raw_cdp") or hasattr(raw_cdp, "RawCdpClient")
-    assert hasattr(adspower_cdp, "AdspowerCdpProvider")
-    assert hasattr(manager, "SessionManager")
-
-
-COMPILED_PY_NAMES = {
+SOURCE_PY_NAMES = {
     "browser_auto_ops/snapshot/scanner.py",
     "browser_auto_ops/actions/executor.py",
     "browser_auto_ops/providers/chrome_direct.py",
@@ -28,21 +19,29 @@ COMPILED_PY_NAMES = {
 }
 
 
+def test_core_implementation_modules_import() -> None:
+    assert scanner.SnapshotEngine is not None or hasattr(scanner, "DOM_SCANNER")
+    assert hasattr(executor, "ActionExecutor")
+    assert hasattr(chrome_direct, "ChromeDirectProvider")
+    assert hasattr(raw_cdp, "connect_raw_cdp") or hasattr(raw_cdp, "RawCdpClient")
+    assert hasattr(adspower_cdp, "AdspowerCdpProvider")
+    assert hasattr(manager, "SessionManager")
+
+
 @pytest.mark.skipif(
     Path(scanner.__file__).suffix == ".py",
-    reason="source checkout still exposes .py; compiled wheels replace these modules",
+    reason="development wheels ship source; compiled extensions are optional later",
 )
 def test_published_modules_are_compiled() -> None:
     for module in (scanner, executor, chrome_direct, raw_cdp, adspower_cdp, manager):
         assert Path(module.__file__).suffix in {".pyd", ".so"}
 
 
-def test_dist_wheel_hides_compiled_sources() -> None:
+def test_dist_wheel_keeps_implementation_sources() -> None:
     wheels = list(Path("dist").glob("browser_auto_ops-*.whl"))
     if not wheels:
         pytest.skip("no wheel in dist/")
-    names = zipfile.ZipFile(wheels[-1]).namelist()
-    hidden = COMPILED_PY_NAMES.intersection(names)
-    assert not hidden, hidden
-    assert any(name.endswith(".pyd") or name.endswith(".so") for name in names)
+    names = zipfile.ZipFile(max(wheels, key=lambda path: path.stat().st_mtime)).namelist()
+    missing = SOURCE_PY_NAMES.difference(names)
+    assert not missing, missing
     assert not any(name.startswith("downloads/") for name in names)

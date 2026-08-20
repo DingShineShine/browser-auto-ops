@@ -1,4 +1,8 @@
-"""Wheel hook: compile selected implementation modules so published wheels hide source."""
+"""Optional Cython wheel hook. Not used by the default development install.
+
+Keep this file for a later compiled release. `uv tool install git+...` must stay
+pure Python so other machines do not need MSVC or zig.
+"""
 
 from __future__ import annotations
 
