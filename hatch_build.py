@@ -1,7 +1,8 @@
-"""Optional Cython wheel hook. Not used by the default development install.
+"""Release wheel hook: compile selected modules so published wheels hide source.
 
-Keep this file for a later compiled release. `uv tool install git+...` must stay
-pure Python so other machines do not need MSVC or zig.
+Editable installs (`uv run`, `uv sync`) skip this hook and keep using .py.
+`scripts/publish_pypi.ps1` compiles first, then `uv build --wheel` packs the
+`.pyd` files. Do not upload an sdist.
 """
 
 from __future__ import annotations

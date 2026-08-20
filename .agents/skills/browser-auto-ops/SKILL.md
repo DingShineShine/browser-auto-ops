@@ -5,18 +5,18 @@ allowed-tools: Bash(bao:*)
 metadata:
   author: browser-auto-ops
   version: "0.1.0"
-  install: "uv tool upgrade browser-auto-ops --python 3.12 || uv tool install git+https://github.com/DingShineShine/browser-auto-ops.git --python 3.12"
+  install: "uv tool upgrade browser-auto-ops --python 3.12 || uv tool install browser-auto-ops --python 3.12"
   homepage: "https://github.com/DingShineShine/browser-auto-ops"
   requires:
     runtime: "Python 3.12+, uv package manager"
   permissions:
-    - "Network access for installing the CLI from GitHub and connecting to browser/CDP endpoints"
+    - "Network access for installing the CLI from PyPI and connecting to browser/CDP endpoints"
     - "Filesystem read/write for local session state, traces, screenshots, and generated skills"
     - "CDP access to local Chrome only when chrome-direct is explicitly confirmed"
   data-privacy:
     local-only: "Cookies, login sessions, page content, credentials, and browser profile data stay on the local machine or company VPS. They are not packaged or uploaded with the CLI."
   user-confirmation-required:
-    - "First-time install (uv tool install): downloads the GitHub repository"
+    - "First-time install (uv tool install): downloads the PyPI package"
     - "Browser creation: requires explicit user approval"
     - "Sensitive operations: login, form submission, file upload require user confirmation"
 ---
@@ -26,10 +26,10 @@ metadata:
 Enterprise browser automation CLI for AI agents. Control employee local Chrome
 (`chrome-direct`) and company-managed AdsPower/ADS browsers (`ads`).
 
-Install or refresh the CLI from GitHub `main`:
+Install or refresh the compiled CLI from PyPI:
 
 ```bash
-uv tool upgrade browser-auto-ops --python 3.12 || uv tool install git+https://github.com/DingShineShine/browser-auto-ops.git --python 3.12
+uv tool upgrade browser-auto-ops --python 3.12 || uv tool install browser-auto-ops --python 3.12
 ```
 
 ## Start here

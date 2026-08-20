@@ -47,6 +47,17 @@ exclude = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/browser_auto_ops"]
+exclude = [
+    "src/browser_auto_ops/snapshot/scanner.py",
+    "src/browser_auto_ops/actions/executor.py",
+    "src/browser_auto_ops/providers/chrome_direct.py",
+    "src/browser_auto_ops/providers/raw_cdp.py",
+    "src/browser_auto_ops/providers/adspower_cdp.py",
+    "src/browser_auto_ops/sessions/manager.py",
+]
+
+[tool.hatch.build.targets.wheel.hooks.custom]
+path = "hatch_build.py"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

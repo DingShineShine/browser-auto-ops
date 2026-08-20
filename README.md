@@ -38,11 +38,12 @@ bao session close report
 
 ## Install For Desktop Agents
 
-During development, GitHub `main` is the install source. The thin skill stays
-stable; workflow text is served by the installed CLI.
+Other agents install the compiled wheel from PyPI. This is the same artifact
+they will get after a stable release, so they should not read `.py` sources
+from `site-packages`.
 
 ```bash
-uv tool upgrade browser-auto-ops --python 3.12 || uv tool install git+https://github.com/DingShineShine/browser-auto-ops.git --python 3.12
+uv tool upgrade browser-auto-ops --python 3.12 || uv tool install browser-auto-ops --python 3.12
 bao --help
 bao get-skills core
 ```
@@ -53,19 +54,33 @@ Skill source:
 https://github.com/DingShineShine/browser-auto-ops/tree/main/.agents/skills/browser-auto-ops
 ```
 
-After you push `main`, other agents refresh with `uv tool upgrade`. They do not
-need to reinstall the skill file or clone the company GitLab repo.
+Pushing GitHub does not update other machines. After you publish a new PyPI
+version, they run `uv tool upgrade`.
 
 Cookies, ADS keys, downloads, and local `.bao/` state stay off the package.
 
-## Later: compiled wheels and a package index
+## Publish a new version
 
-Default installs are pure Python so `uv tool install git+...` works without
-MSVC or zig. Optional compile extras and `hatch_build.py` remain for a later
-stable release (PyPI or a private index). Do not use them as the development
-install path.
+PyPI rejects reusing a version. Each update for others needs a new number.
+
+1. Change code or `bao get-skills` text in `src/browser_auto_ops/cli.py`.
+2. Bump `[project].version` in `pyproject.toml` (`0.1.0` -> `0.1.1`).
+3. Create a pypi.org API token once. Do not paste it into chat.
+4. Publish the compiled Windows wheel only:
+
+```powershell
+$env:UV_PUBLISH_TOKEN = "<pypi-api-token>"
+powershell -File scripts/publish_pypi.ps1
+```
+
+The script compiles core modules to `.pyd`, builds a platform wheel, and
+refuses to upload an sdist or a `py3-none-any` source wheel.
+
+Optional: `git tag v0.1.1` and push the tag.
 
 ## Local development
+
+You keep working from the source checkout. Editable installs skip Cython.
 
 ```bash
 uv sync --extra dev

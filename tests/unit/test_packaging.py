@@ -30,18 +30,22 @@ def test_core_implementation_modules_import() -> None:
 
 @pytest.mark.skipif(
     Path(scanner.__file__).suffix == ".py",
-    reason="development wheels ship source; compiled extensions are optional later",
+    reason="editable/source checkout keeps .py; published wheels replace these modules",
 )
 def test_published_modules_are_compiled() -> None:
     for module in (scanner, executor, chrome_direct, raw_cdp, adspower_cdp, manager):
         assert Path(module.__file__).suffix in {".pyd", ".so"}
 
 
-def test_dist_wheel_keeps_implementation_sources() -> None:
+def test_release_wheel_hides_compiled_sources() -> None:
     wheels = list(Path("dist").glob("browser_auto_ops-*.whl"))
     if not wheels:
         pytest.skip("no wheel in dist/")
-    names = zipfile.ZipFile(max(wheels, key=lambda path: path.stat().st_mtime)).namelist()
-    missing = SOURCE_PY_NAMES.difference(names)
-    assert not missing, missing
+    wheel = max(wheels, key=lambda path: path.stat().st_mtime)
+    if "py3-none-any" in wheel.name:
+        pytest.skip("source wheel leftover; release wheels are platform-specific")
+    names = zipfile.ZipFile(wheel).namelist()
+    hidden = SOURCE_PY_NAMES.intersection(names)
+    assert not hidden, hidden
+    assert any(name.endswith(".pyd") or name.endswith(".so") for name in names)
     assert not any(name.startswith("downloads/") for name in names)
