@@ -29,8 +29,11 @@ def evaluate_skill(
         {"name": "locator_table_present", "ok": "查找元素" in text or "locator" in text.lower()},
     ]
     workflow = _load_workflow(skill_dir)
+    if workflow and ("schema_version" in workflow or "workflow_steps" in workflow):
+        checks.append({"name": "workflow_ir_v2", "ok": workflow.get("schema_version") == 2 and isinstance(workflow.get("workflow_steps"), list)})
+        checks.append({"name": "validators_present", "ok": isinstance(workflow.get("validators"), list) and bool(workflow.get("validators"))})
     criteria = _criteria_from_workflow_or_text(workflow, text)
-    locators = workflow.get("locators") if isinstance(workflow.get("locators"), list) else []
+    locators = _live_locators(workflow)
     live_payload, live_reason = _resolve_live(live, inspect)
     if live_payload is not None:
         checks.extend(_live_checks(live_payload, criteria, locators, state))
@@ -98,11 +101,42 @@ def _load_workflow(skill_dir: Path) -> dict[str, Any]:
 def _criteria_from_workflow_or_text(workflow: dict[str, Any], text: str) -> list[str]:
     criteria = workflow.get("success_criteria")
     if isinstance(criteria, list):
-        return [str(item) for item in criteria]
+        rows = [str(item) for item in criteria]
+        return _append_validator_criteria(rows, workflow.get("validators") or [])
     if "## 成功标准" not in text:
         return []
     section = text.split("## 成功标准", 1)[1].split("## ", 1)[0]
     return [line.strip("- ").strip() for line in section.splitlines() if line.strip().startswith("-")]
+
+
+def _append_validator_criteria(rows: list[str], validators: list[Any]) -> list[str]:
+    for validator in validators:
+        line = _validator_criterion(validator)
+        if line and line not in rows:
+            rows.append(line)
+    return rows
+
+
+def _validator_criterion(validator: Any) -> str:
+    if not isinstance(validator, dict):
+        return ""
+    if validator.get("type") == "page_title" and validator.get("expected"):
+        return f'title == "{validator["expected"]}"'
+    if validator.get("type") == "url_query_key" and validator.get("key"):
+        return f'url contains {validator["key"]}'
+    return ""
+
+
+def _live_locators(workflow: dict[str, Any]) -> list[Any]:
+    locators = workflow.get("locators") if isinstance(workflow.get("locators"), list) else []
+    from_steps: list[Any] = []
+    for step in workflow.get("workflow_steps") or []:
+        if not isinstance(step, dict) or step.get("type") != "browser_action":
+            continue
+        locator = step.get("locator")
+        if isinstance(locator, dict):
+            from_steps.append(locator)
+    return from_steps or locators
 
 
 def _live_criteria_checks(criteria: list[str], live: dict[str, Any]) -> list[dict[str, Any]]:

@@ -4,6 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
+from browser_auto_ops.forge.ir import replayable_step_actions
+
 
 def load_workflow(path_or_skill_dir: Path) -> dict[str, Any]:
     path = path_or_skill_dir
@@ -16,6 +18,9 @@ def load_workflow(path_or_skill_dir: Path) -> dict[str, Any]:
 
 
 def workflow_actions(workflow: dict[str, Any], *, live: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    step_actions = replayable_step_actions(workflow, live=live)
+    if step_actions:
+        return step_actions
     locators = _locators_for_live_state(workflow, live)
     actions: list[dict[str, Any]] = []
     for locator in locators:

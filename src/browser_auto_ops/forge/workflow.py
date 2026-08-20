@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 from urllib.parse import parse_qs, urlparse
 
+from browser_auto_ops.forge.ir import build_workflow_steps, validators_from_workflow, workflow_step_lines
 from browser_auto_ops.forge.locators import _SKIP_ACTION_TYPES, accessible_name, locators_from_actions
 from browser_auto_ops.forge.params import extract_parameters
 
@@ -12,23 +13,30 @@ _AUTH_ACTION_MARKERS = ("email", "password", "log in", "login", "sign in", "sign
 
 
 def build_workflow(summary: dict[str, Any], name: str, goal: str) -> dict[str, Any]:
-    actions, dropped_actions = clean_actions(summary.get("actions") or [])
+    raw_actions = summary.get("actions") or []
+    actions, dropped_actions = clean_actions(raw_actions)
     locators = locators_from_actions(actions)
     auth_count = _auth_locator_count(actions, locators)
     _mark_live_current(locators, auth_count)
     parameters = extract_parameters(summary, goal)
     criteria = success_criteria(summary, actions)
     last_state = summary.get("last_state") if isinstance(summary.get("last_state"), dict) else {}
-    steps = _steps(actions, locators)
-    auth_steps = steps[:auth_count]
-    main_steps = steps[auth_count:]
+    workflow_steps = build_workflow_steps(raw_actions, locators, _drop_reason, auth_count=auth_count)
+    legacy_steps = _steps(actions, locators)
+    steps = workflow_step_lines(workflow_steps) or legacy_steps
+    auth_steps = legacy_steps[:auth_count]
+    main_steps = steps or legacy_steps[auth_count:]
+    validators = validators_from_workflow(summary, criteria, workflow_steps)
     return {
         "name": name,
         "goal": goal,
+        "schema_version": 2,
         "browser_type": summary.get("browser_type") or summary.get("provider") or "ads",
         "session_hint": summary.get("session_name") or name,
         "start_url": _start_url(summary, actions, last_state),
         "parameters": parameters,
+        "workflow_steps": workflow_steps,
+        "validators": validators,
         "locators": locators,
         "steps": steps,
         "main_steps": main_steps,
@@ -83,6 +91,9 @@ def success_criteria(summary: dict[str, Any], actions: list[dict[str, Any]] | No
     final_keys = set(parse_qs(urlparse(str(last_state.get("url") or "")).query))
     if final_keys:
         rows = [item for item in rows if not item.startswith("url contains ") or item.split(" ", 2)[-1] in final_keys]
+    final_title = str(last_state.get("title") or "")
+    if final_title:
+        rows = [item for item in rows if not item.startswith("title ==") or item == f'title == "{final_title}"']
     if not rows and (actions or summary.get("actions")):
         rows.append("recorded step checkpoints succeeded")
     return rows
@@ -112,6 +123,8 @@ def render_skill(workflow: dict[str, Any]) -> str:
         step_lines.append(f"{index}. {step}")
     steps_block = "\n".join(step_lines) or "- no recorded actions; use `scripts/extract.py` only to read the page"
     criteria = "\n".join(f"- {item}" for item in workflow.get("success_criteria") or []) or "- recorded step checkpoints succeeded"
+    validator_lines = "\n".join(_render_validator(item) for item in workflow.get("validators") or [])
+    validator_block = f"\n\nValidation layers:\n{validator_lines}" if validator_lines else ""
     api_lines = "\n".join(f"- `python scripts/{item}`" for item in workflow.get("api_scripts") or [])
     api_block = (
         f"\n## API paths\n\nIf the same network shape is still valid, prefer these captured API scripts:\n\n{api_lines}\n"
@@ -175,6 +188,7 @@ Match role + accessible name / label / placeholder. Narrow with a container role
 ## 成功标准
 
 {criteria}
+{validator_block}
 
 ## 安全
 
@@ -195,6 +209,17 @@ def _render_param(item: dict[str, Any]) -> str:
         details.append("formats " + ", ".join(f"`{value}`" for value in item["format_hints"]))
     suffix = f" — {'; '.join(details)}" if details else ""
     return f"- `--{item['name']}` (from {item['source']}{kind}): `{item['value']}`{suffix}"
+
+
+def _render_validator(item: dict[str, Any]) -> str:
+    kind = item.get("type") or "validator"
+    if kind == "artifact":
+        return "- artifact: exists and non-empty"
+    if item.get("expected"):
+        return f"- {kind}: `{item['expected']}`"
+    if item.get("key"):
+        return f"- {kind}: `{item['key']}`"
+    return f"- {kind}"
 
 
 def _steps(actions: list[dict[str, Any]], locators: list[dict[str, Any]]) -> list[str]:
@@ -239,7 +264,10 @@ def generation_report(
             "included": len(workflow.get("locators") or []),
             "dropped": len(dropped),
             "dropped_by_reason": dropped_by_reason,
+            "workflow_steps": len(workflow.get("workflow_steps") or []),
         },
+        "workflow_schema_version": workflow.get("schema_version"),
+        "validators": len(workflow.get("validators") or []),
         "parameters": workflow.get("parameters") or [],
         "auth_branch": bool(workflow.get("auth")),
         "api_hints": api_scripts,

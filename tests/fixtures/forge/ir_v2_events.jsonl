@@ -1,0 +1,11 @@
+{"type":"state.capture","payload":{"url":"https://example.test/report","title":"Reports","elements":[{"index":1,"kind":"button","tag":"button","role":"button","text":"Generate","clickable":true,"visible":true,"enabled":true}]}}
+{"type":"action.request","payload":{"type":"wait"}}
+{"type":"action.result","payload":{"type":"wait","success":true}}
+{"type":"action.request","payload":{"type":"execute_js","script":"document.title"}}
+{"type":"action.result","payload":{"type":"execute_js","success":true,"data":"Reports"}}
+{"type":"action.request","payload":{"type":"execute_js","script":"fetch('/download').then(r => r.arrayBuffer())"}}
+{"type":"action.result","payload":{"type":"execute_js","success":true,"data":{"base64":"Zm9v","filename":"report.csv"}}}
+{"type":"action.request","payload":{"type":"click","match":{"text":"Generate"}}}
+{"type":"action.result","payload":{"type":"click","success":false,"message":"multiple matches"}}
+{"type":"action.request","payload":{"type":"click","index":1}}
+{"type":"action.result","payload":{"type":"click","success":true}}

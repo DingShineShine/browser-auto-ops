@@ -206,6 +206,13 @@ def _compact_element(element: dict[str, Any]) -> dict[str, Any]:
         "clickable": element.get("clickable"),
         "fillable": element.get("fillable"),
         "selectable": element.get("selectable"),
+        "visible": element.get("visible"),
+        "enabled": element.get("enabled"),
+        "occluded": element.get("occluded"),
+        "checked": element.get("checked"),
+        "selected": element.get("selected"),
+        "expanded": element.get("expanded"),
+        "scrollable": element.get("scrollable"),
         "modal": element.get("modal"),
         "value": element.get("value"),
         "attributes": attributes if isinstance(attributes, dict) else {},
@@ -221,13 +228,44 @@ def _compact_action(action: dict[str, Any]) -> dict[str, Any]:
         "text",
         "option",
         "url",
+        "script",
+        "direction",
+        "amount",
+        "key",
+        "output",
         "success",
         "message",
         "fallback_used",
         "require_confirm",
         "verification",
+        "data",
     }
-    return {key: value for key, value in action.items() if key in keep}
+    compacted = {key: value for key, value in action.items() if key in keep}
+    if "data" in compacted:
+        compacted["data"] = _compact_data(compacted["data"])
+    if isinstance(compacted.get("script"), str) and len(compacted["script"]) > 20_000:
+        compacted["script"] = compacted["script"][:20_000] + "\n/* truncated by forge */"
+    return compacted
+
+
+def _compact_data(value: Any) -> Any:
+    if isinstance(value, str):
+        if len(value) > 2000:
+            return {"type": "string", "length": len(value), "sample": value[:200]}
+        return value
+    if isinstance(value, dict):
+        row: dict[str, Any] = {}
+        for key, item in value.items():
+            if key in {"base64", "response_body_base64"} and isinstance(item, str):
+                row[key] = f"<base64:{len(item)} chars>"
+            elif isinstance(item, str) and len(item) > 1000:
+                row[key] = {"type": "string", "length": len(item), "sample": item[:160]}
+            else:
+                row[key] = item
+        return row
+    if isinstance(value, list):
+        return [_compact_data(item) for item in value[:20]]
+    return value
 
 
 def _checkpoint_from_result(result: dict[str, Any], action: dict[str, Any]) -> dict[str, Any]:

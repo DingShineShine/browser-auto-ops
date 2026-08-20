@@ -362,7 +362,8 @@ async def _replay_workflow(skill_dir: Path, session_id: str) -> dict[str, Any]:
     try:
         managed = manager.sessions[session_id]
         live = await _page_observe(managed.connection.page)
-        actions = workflow_actions(load_workflow(skill_dir), live=live)
+        workflow = load_workflow(skill_dir)
+        actions = workflow_actions(workflow, live=live)
     except Exception as exc:
         return {"ok": False, "reason": str(exc), "results": []}
     results: list[dict[str, Any]] = []
@@ -376,8 +377,36 @@ async def _replay_workflow(skill_dir: Path, session_id: str) -> dict[str, Any]:
         results.append(item)
         if not result.success:
             ok = False
+            item["repair_suggestion"] = _write_replay_repair_suggestion(skill_dir, idx, raw, result, state)
             break
     return {"ok": ok, "results": results}
+
+
+def _write_replay_repair_suggestion(
+    skill_dir: Path,
+    step_index: int,
+    request: dict[str, Any],
+    result: Any,
+    state: Any,
+) -> str:
+    evidence = skill_dir / "evidence"
+    evidence.mkdir(parents=True, exist_ok=True)
+    state_payload = state.model_dump(mode="json") if hasattr(state, "model_dump") else {}
+    payload = {
+        "step": step_index,
+        "failed_request": request,
+        "message": getattr(result, "message", ""),
+        "current_url": state_payload.get("url"),
+        "current_title": state_payload.get("title"),
+        "suggestions": [
+            "Run `bao state` and prefer role/name/label/placeholder over @eN or numeric indexes.",
+            "If multiple controls match, add a stable `within` container or shortest unique text prefix.",
+            "If the action was a DOM/API helper, keep it as an eval_helper/api_call step with an explicit assertion.",
+        ],
+    }
+    path = evidence / "repair-suggestion.json"
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    return str(path)
 
 
 def _session_id(session_ref: str) -> str:

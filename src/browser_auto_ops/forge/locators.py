@@ -91,6 +91,7 @@ def locator_for_element(
         "step": _step_id(resolved_action, name or kind),
         "match": match,
         "action": resolved_action,
+        "actionability": _actionability(element),
     }
     container = find_container(elements or [], element)
     if container and name:
@@ -105,6 +106,8 @@ def locator_for_element(
                 "text": accessible_name(container) or role_of(container),
                 "text_mode": "contains",
             }
+    if elements:
+        _rank_locator(locator, element, elements)
     return locator
 
 
@@ -135,6 +138,7 @@ def locators_from_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]
                 "step": _step_id(mapped, _match_label(request_match) or mapped),
                 "match": dict(request_match),
                 "action": mapped,
+                "actionability": {"visible": True, "enabled": True, "not_occluded": True, "stable": True},
             }
         elif request.get("type") == "goto_url" and request.get("url"):
             row = {
@@ -188,6 +192,109 @@ def _is_container(element: dict[str, Any]) -> bool:
     role = role_of(element)
     kind = _clean(element.get("kind")).lower()
     return bool(element.get("modal") or role in _CONTAINER_ROLES or kind in _CONTAINER_KINDS)
+
+
+def _actionability(element: dict[str, Any]) -> dict[str, bool]:
+    return {
+        "visible": element.get("visible") is not False,
+        "enabled": element.get("enabled") is not False,
+        "not_occluded": not bool(element.get("occluded")),
+        "stable": True,
+    }
+
+
+def _rank_locator(locator: dict[str, Any], target: dict[str, Any], elements: list[dict[str, Any]]) -> None:
+    match = locator.get("match") if isinstance(locator.get("match"), dict) else {}
+    candidates = _matching_elements(match, elements, locator.get("within") if isinstance(locator.get("within"), dict) else None)
+    if len(candidates) == 1:
+        locator["locator_rank"] = {"strategy": "semantic_exact", "unique": True, "candidates": 1}
+        return
+
+    improved = _shortest_unique_text_match(match, target, elements, locator.get("within") if isinstance(locator.get("within"), dict) else None)
+    if improved:
+        match.update(improved)
+        candidates = _matching_elements(match, elements, locator.get("within") if isinstance(locator.get("within"), dict) else None)
+        locator["locator_rank"] = {"strategy": "shortest_unique_text", "unique": len(candidates) == 1, "candidates": len(candidates)}
+        return
+
+    locator["locator_rank"] = {"strategy": "semantic_scoped", "unique": len(candidates) == 1, "candidates": len(candidates)}
+
+
+def _shortest_unique_text_match(
+    match: dict[str, Any],
+    target: dict[str, Any],
+    elements: list[dict[str, Any]],
+    within: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    name = accessible_name(target)
+    if not name:
+        return None
+    words = [part.strip(" ,;:/|") for part in re.split(r"\s+", name) if len(part.strip(" ,;:/|")) >= 3]
+    for size in range(1, min(len(words), 4) + 1):
+        candidate = " ".join(words[:size])
+        trial = dict(match)
+        trial["text"] = candidate
+        trial["text_mode"] = "starts_with"
+        if _matching_elements(trial, elements, within) == [target]:
+            return {"text": candidate, "text_mode": "starts_with"}
+    return None
+
+
+def _matching_elements(match: dict[str, Any], elements: list[dict[str, Any]], within: dict[str, Any] | None) -> list[dict[str, Any]]:
+    scoped = _scoped_elements(elements, within)
+    return [item for item in scoped if isinstance(item, dict) and _element_matches(match, item)]
+
+
+def _scoped_elements(elements: list[dict[str, Any]], within: dict[str, Any] | None) -> list[dict[str, Any]]:
+    if not within:
+        return elements
+    role = _clean(within.get("role")).lower()
+    text = _clean(within.get("text")).lower()
+    container_seen = False
+    scoped: list[dict[str, Any]] = []
+    for item in elements:
+        is_container = role and role_of(item) == role and (not text or text in accessible_name(item).lower())
+        if is_container:
+            container_seen = True
+            continue
+        if container_seen:
+            if _is_container(item):
+                break
+            scoped.append(item)
+    return scoped or elements
+
+
+def _element_matches(match: dict[str, Any], element: dict[str, Any]) -> bool:
+    role = match.get("role")
+    if role and role_of(element) != str(role).lower():
+        return False
+    kind = match.get("kind")
+    if kind and _clean(element.get("kind")).lower() != str(kind).lower():
+        return False
+    for key in ("text", "name", "label", "placeholder"):
+        value = _clean(match.get(key))
+        if not value:
+            continue
+        source = _match_source(key, element)
+        if not _text_matches(source, value, str(match.get(f"{key}_mode") or "contains")):
+            return False
+    return True
+
+
+def _match_source(key: str, element: dict[str, Any]) -> str:
+    if key in {"text", "name", "label"}:
+        return accessible_name(element)
+    return _clean(element.get("placeholder"))
+
+
+def _text_matches(actual: str, expected: str, mode: str) -> bool:
+    actual_fold = actual.lower()
+    expected_fold = expected.lower()
+    if mode == "exact":
+        return actual_fold == expected_fold
+    if mode == "starts_with":
+        return actual_fold.startswith(expected_fold)
+    return expected_fold in actual_fold
 
 
 def _is_secret_element(element: dict[str, Any]) -> bool:
