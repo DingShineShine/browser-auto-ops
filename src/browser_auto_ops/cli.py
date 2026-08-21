@@ -5,6 +5,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -78,6 +79,7 @@ def daemon_start(
     host: str = typer.Option("127.0.0.1", "--host"),
     port: int = typer.Option(8765, "--port"),
     foreground: bool = typer.Option(False, "--foreground"),
+    replace_mismatch: bool = typer.Option(True, "--replace-mismatch/--no-replace-mismatch"),
 ) -> None:
     if foreground:
         import uvicorn
@@ -85,6 +87,11 @@ def daemon_start(
         uvicorn.run("browser_auto_ops.server:app", host=host, port=port)
         return
     root = ensure_data_dirs()
+    reused = _prepare_daemon_start(root, replace_mismatch)
+    if reused:
+        _echo(reused, force_json=True)
+        return
+
     pid_path = root / "daemon.json"
     command = [
         sys.executable,
@@ -111,7 +118,13 @@ def daemon_start(
         json.dumps({"pid": process.pid, "url": local_url, "data_root": str(root)}, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    _echo({"ok": True, "pid": process.pid, "url": local_url, "data_root": str(root)}, force_json=True)
+    health = _wait_daemon_up(root)
+    if not health:
+        exit_code = process.poll()
+        if exit_code is not None:
+            raise typer.BadParameter(f"daemon failed to start; process exited with {exit_code}")
+        raise typer.BadParameter("daemon started but did not report the current data_root")
+    _echo({"ok": True, "pid": process.pid, "url": local_url, "data_root": str(root), "health": health}, force_json=True)
 
 
 @daemon_app.command("status")
@@ -142,20 +155,21 @@ def daemon_status() -> None:
 
 @daemon_app.command("stop")
 def daemon_stop() -> None:
-    path = ensure_data_dirs() / "daemon.json"
-    if not path.exists():
-        _echo({"ok": True, "stopped": False, "reason": "daemon pid file not found"}, force_json=True)
-        return
-    data = json.loads(path.read_text(encoding="utf-8"))
-    pid = int(data["pid"])
-    try:
-        if os.name == "nt":
-            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"], check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        else:
-            os.kill(pid, 15)
-    finally:
-        path.unlink(missing_ok=True)
-    _echo({"ok": True, "stopped": True, "pid": pid}, force_json=True)
+    root = ensure_data_dirs()
+    record = _read_daemon_record(root)
+    source = "local"
+    if not record:
+        health = _daemon_health()
+        if health:
+            record = _daemon_record_from_health(health)
+            source = "health"
+        if not record:
+            _echo({"ok": True, "stopped": False, "reason": "daemon pid file not found"}, force_json=True)
+            return
+    payload = _stop_daemon_record(record, source=source)
+    if payload.get("stopped"):
+        _wait_daemon_down()
+    _echo(payload, force_json=True)
 
 
 @chrome_direct_app.command("authorize")
@@ -223,6 +237,8 @@ def browser_create(
         raise typer.BadParameter("public browser type must be chrome-direct or ads")
     if browser_type == "ads" and (not ads_base_url or not ads_user_id):
         raise typer.BadParameter("ads browser requires --ads-base-url and --ads-user-id")
+    health = _daemon_health()
+    _reject_mismatched_daemon(health)
     if browser_type == "chrome-direct" and _chrome_direct_exists(BrowserStore()):
         raise typer.BadParameter("only one chrome-direct browser identity is supported")
     provider = "chrome-direct" if browser_type == "chrome-direct" else "adspower-cdp"
@@ -241,7 +257,7 @@ def browser_create(
             remote_debugging_port=remote_debugging_port,
         ),
     )
-    if _daemon_same_home():
+    if _daemon_home_matches(health):
         payload = _daemon_request("POST", "/browsers", identity.model_dump(mode="json"))
         _echo(payload, force_json=True)
         return
@@ -251,7 +267,9 @@ def browser_create(
 
 @browser_app.command("list")
 def browser_list() -> None:
-    if _daemon_same_home():
+    health = _daemon_health()
+    _reject_mismatched_daemon(health)
+    if _daemon_home_matches(health):
         _echo(_daemon_request("GET", "/browsers"), force_json=True)
         return
     _echo([item.model_dump(mode="json") for item in BrowserStore().list()])
@@ -259,7 +277,9 @@ def browser_list() -> None:
 
 @browser_app.command("delete")
 def browser_delete(browser_id_or_name: str) -> None:
-    if _daemon_same_home():
+    health = _daemon_health()
+    _reject_mismatched_daemon(health)
+    if _daemon_home_matches(health):
         payload = _daemon_request("DELETE", f"/browsers/{browser_id_or_name}")
         _echo(payload, force_json=True)
         return
@@ -1347,8 +1367,8 @@ def _daemon_request(
         return None
 
 
-def _daemon_health() -> dict[str, Any] | None:
-    payload = _daemon_request("GET", "/health", required=False, timeout=1.0)
+def _daemon_health(timeout: float = 1.0) -> dict[str, Any] | None:
+    payload = _daemon_request("GET", "/health", required=False, timeout=timeout)
     return payload if isinstance(payload, dict) else None
 
 
@@ -1372,21 +1392,170 @@ def _paths_equal(left: str | Path, right: str | Path) -> bool:
         return False
 
 
+def _daemon_home_matches(health: dict[str, Any] | None, root: Path | None = None) -> bool:
+    remote = (health or {}).get("data_root")
+    return bool(remote) and _paths_equal(str(remote), root or ensure_data_dirs())
+
+
+def _daemon_has_mismatched_home(health: dict[str, Any] | None, root: Path | None = None) -> bool:
+    remote = (health or {}).get("data_root")
+    return bool(remote) and not _paths_equal(str(remote), root or ensure_data_dirs())
+
+
+def _reject_mismatched_daemon(health: dict[str, Any] | None) -> None:
+    if _daemon_has_mismatched_home(health):
+        raise typer.BadParameter(_data_root_mismatch_message(health))
+
+
 def _daemon_same_home() -> bool:
     health = _daemon_health()
-    if not health or not health.get("data_root"):
-        return False
-    return _paths_equal(str(health["data_root"]), ensure_data_dirs())
+    return _daemon_home_matches(health)
 
 
-def _data_root_mismatch_message() -> str:
-    health = _daemon_health() or {}
+def _data_root_mismatch_message(health: dict[str, Any] | None = None) -> str:
+    health = health or _daemon_health() or {}
     remote = health.get("data_root")
     local = ensure_data_dirs()
     return (
         f"daemon data_root {remote} != current {local}; "
-        "stop the old daemon and run `bao daemon start` in this repo"
+        "run `bao daemon start` to replace it, or `bao daemon stop` to stop the old daemon first"
     )
+
+
+def _prepare_daemon_start(root: Path, replace_mismatch: bool) -> dict[str, Any] | None:
+    health = _daemon_health()
+    if _daemon_home_matches(health, root):
+        record = _read_daemon_record(root)
+        return {
+            "ok": True,
+            "running": True,
+            "reused": True,
+            "pid": record.get("pid") if record else None,
+            "url": record.get("url") if record else _daemon_url(),
+            "data_root": str(root),
+            "health": health,
+        }
+    if _daemon_has_mismatched_home(health, root):
+        if not replace_mismatch:
+            raise typer.BadParameter(_data_root_mismatch_message(health))
+        stopped = _stop_daemon_from_health(health)
+        if not stopped.get("stopped"):
+            raise typer.BadParameter(f"failed to stop mismatched daemon: {stopped.get('reason', 'unknown error')}")
+        if not _wait_daemon_down():
+            raise typer.BadParameter("mismatched daemon did not stop; retry `bao daemon stop` and then `bao daemon start`")
+        return None
+    if health:
+        raise typer.BadParameter("daemon is running but did not report data_root; stop it manually before starting here")
+    return None
+
+
+def _read_daemon_record(root: Path) -> dict[str, Any] | None:
+    pid_path = root / "daemon.json"
+    if not pid_path.exists():
+        return None
+    try:
+        record = json.loads(pid_path.read_text(encoding="utf-8"))
+        pid = int(record["pid"])
+    except Exception:
+        return None
+    if not isinstance(record, dict):
+        return None
+    record = dict(record)
+    record["pid"] = pid
+    record.setdefault("url", _daemon_url())
+    record.setdefault("data_root", str(root))
+    record["_pid_path"] = str(pid_path)
+    return record
+
+
+def _health_is_bao_daemon(health: dict[str, Any] | None) -> bool:
+    if not health or not health.get("data_root"):
+        return False
+    import_path = str(health.get("import_path") or "").replace("\\", "/")
+    return "browser_auto_ops/" in import_path or import_path.endswith("browser_auto_ops/server.py")
+
+
+def _daemon_record_from_health(health: dict[str, Any] | None) -> dict[str, Any] | None:
+    if not _health_is_bao_daemon(health):
+        return None
+    data_root = (health or {}).get("data_root")
+    if not data_root:
+        return None
+    return _read_daemon_record(Path(str(data_root)))
+
+
+def _stop_daemon_from_health(health: dict[str, Any] | None) -> dict[str, Any]:
+    record = _daemon_record_from_health(health)
+    if not record:
+        remote = (health or {}).get("data_root")
+        return {
+            "ok": False,
+            "stopped": False,
+            "reason": f"daemon pid file not found for data_root {remote}",
+            "data_root": remote,
+            "source": "health",
+        }
+    return _stop_daemon_record(record, source="health")
+
+
+def _stop_daemon_record(record: dict[str, Any], *, source: str) -> dict[str, Any]:
+    pid = int(record["pid"])
+    pid_path = Path(str(record["_pid_path"])) if record.get("_pid_path") else None
+    exit_code: int | None = None
+    reason: str | None = None
+    stopped = True
+    try:
+        if os.name == "nt":
+            completed = subprocess.run(
+                ["taskkill", "/PID", str(pid), "/T", "/F"],
+                check=False,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+            exit_code = completed.returncode
+            stopped = exit_code == 0
+            if not stopped:
+                reason = f"taskkill exited with {exit_code}"
+        else:
+            os.kill(pid, 15)
+    except ProcessLookupError:
+        stopped = False
+        reason = "process not found"
+    finally:
+        if pid_path:
+            pid_path.unlink(missing_ok=True)
+    payload = {
+        "ok": stopped,
+        "stopped": stopped,
+        "pid": pid,
+        "source": source,
+        "data_root": record.get("data_root"),
+        "url": record.get("url"),
+    }
+    if exit_code is not None:
+        payload["exit_code"] = exit_code
+    if reason:
+        payload["reason"] = reason
+    return payload
+
+
+def _wait_daemon_down(timeout: float = 5.0) -> bool:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _daemon_health(timeout=0.2) is None:
+            return True
+        time.sleep(0.1)
+    return _daemon_health(timeout=0.2) is None
+
+
+def _wait_daemon_up(root: Path, timeout: float = 5.0) -> dict[str, Any] | None:
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        health = _daemon_health(timeout=0.5)
+        if _daemon_home_matches(health, root):
+            return health
+        time.sleep(0.1)
+    return None
 
 
 def _require_matching_daemon() -> dict[str, Any]:
@@ -1676,7 +1845,7 @@ Click/input results default to a compact payload: `result` plus `checkpoint.url`
 
 Describe → Explore → Generate → Self-test.
 
-1. Confirm `bao daemon status` `data_root` is this repository's `.bao`. If it is not, stop the old daemon and run `bao daemon start` here.
+1. Run `bao daemon start`; it reuses this repository's daemon or replaces a confirmed mismatched bao daemon whose `data_root` points elsewhere.
 2. Keep using the same named session for every click/input/wait so actions land in one `events.jsonl`.
 3. Generate from that session. Do not create a second sparse trace with a late `forge explore` as the only evidence.
 
@@ -1780,7 +1949,7 @@ bao session close task-name
 
 Important rules:
 
-- Run `bao daemon start` before `chrome-direct` work. Without daemon, fallback reconnect mode may trigger Chrome's remote-debugging permission dialog repeatedly.
+- Run `bao daemon start` before browser work. If another bao daemon owns the default port with a different `data_root`, start replaces it after confirming its pid file.
 - Re-run `bao --session <name> state` after navigation or DOM changes; indexes and `@eN` refs are snapshot handles. Same-page rescans may preserve refs, but never write index/ref into generated skills.
 - Use `chrome-direct` only when the task needs live local Chrome cookies, extensions, certificates, or SSO.
 - Use `ads` for company-managed AdsPower browser profiles on the VPS.

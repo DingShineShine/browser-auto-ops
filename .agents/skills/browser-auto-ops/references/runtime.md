@@ -51,7 +51,7 @@ AdsPower often returns a loopback `ws.puppeteer` URL. In production, run browser
 
 ## Daemon Requirement
 
-Use `bao daemon start` before `chrome-direct` work. Without the daemon, legacy reconnect mode may trigger Chrome's remote-debugging permission dialog on every command.
+Use `bao daemon start` before browser work. It reuses the daemon for this repository or replaces a confirmed old bao daemon whose `data_root` points at another `.bao` directory. Without the daemon, legacy reconnect mode may trigger Chrome's remote-debugging permission dialog on every command.
 
 ## Known Boundaries
 

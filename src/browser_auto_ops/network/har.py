@@ -9,7 +9,7 @@ def to_har(items: list[NetworkRequestInfo]) -> dict[str, Any]:
     return {
         "log": {
             "version": "1.2",
-            "creator": {"name": "browser-auto-ops", "version": "0.1.0"},
+            "creator": {"name": "browser-auto-ops", "version": "0.1.1"},
             "entries": [_entry(item) for item in items],
         }
     }

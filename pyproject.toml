@@ -1,6 +1,6 @@
 [project]
 name = "browser-auto-ops"
-version = "0.1.0"
+version = "0.1.1"
 description = "ADS/CDP-first browser automation engine with state-index actions, trace, network capture, and skill forge."
 readme = "README.md"
 requires-python = ">=3.12"

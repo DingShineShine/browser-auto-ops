@@ -36,6 +36,10 @@ bao --session report downloads wait latest --output D:\exports
 bao session close report
 ```
 
+`bao daemon start` is safe to run at the start of every task. It reuses an
+already-running daemon for this repository, or replaces a confirmed old bao
+daemon whose `data_root` points at another `.bao` directory.
+
 ## Install For Desktop Agents
 
 Other agents install the compiled wheel from PyPI. This is the same artifact

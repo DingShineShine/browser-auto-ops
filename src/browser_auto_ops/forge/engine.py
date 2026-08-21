@@ -45,7 +45,9 @@ class ForgeEngine:
         if session_name:
             summary["session_name"] = session_name
         if browser_type:
-            summary["browser_type"] = browser_type
+            hint = summary.setdefault("environment_hint", {})
+            if isinstance(hint, dict):
+                hint["observed_browser_type"] = browser_type
         resolved_goal = goal or summary.get("goal") or name
         api_scripts = write_api_scripts(scripts, summary)
         summary["api_scripts"] = api_scripts

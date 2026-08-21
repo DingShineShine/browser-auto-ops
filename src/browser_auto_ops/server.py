@@ -25,7 +25,7 @@ from browser_auto_ops.schemas import ActionRequest, BrowserIdentity, BrowserSess
 from browser_auto_ops.sessions import SessionManager, SessionStore
 from browser_auto_ops.sessions.payload import compact_action_payload
 
-app = FastAPI(title="browser-auto-ops", version="0.1.0")
+app = FastAPI(title="browser-auto-ops", version="0.1.1")
 manager = SessionManager()
 browser_store = BrowserStore()
 session_store = SessionStore()

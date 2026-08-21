@@ -31,7 +31,7 @@ def build_workflow(summary: dict[str, Any], name: str, goal: str) -> dict[str, A
         "name": name,
         "goal": goal,
         "schema_version": 2,
-        "browser_type": summary.get("browser_type") or summary.get("provider") or "ads",
+        "environment_hint": _environment_hint(summary),
         "session_hint": summary.get("session_name") or name,
         "start_url": _start_url(summary, actions, last_state),
         "parameters": parameters,
@@ -156,12 +156,13 @@ metadata:
 
 {goal}
 
-## 已验证环境
+## 运行参数
 
 - Suggested session name: `{workflow.get("session_hint") or name}`
-- Browser type: `{workflow.get("browser_type") or "ads"}`
+- Browser identity: pass at runtime as `<browser-name-or-id>`; do not hard-code local Chrome vs ADS/AdsPower selection in this skill.
 - Start from: `{start_url}`
-- Ads profile id is a runtime flag (`--ads-user-id`), not a hard-coded replay prerequisite.
+- For ADS/AdsPower, provide the profile id only when registering the browser identity, for example `bao browser create --type ads --name <browser-name> --ads-base-url <ads-base-url> --ads-user-id <ads-user-id>`.
+- Open the browser for replay with `bao --session <name> browser open <browser-name-or-id> <start-url> --confirm`.
 
 ## 前置检查
 
@@ -209,6 +210,21 @@ def _render_param(item: dict[str, Any]) -> str:
         details.append("formats " + ", ".join(f"`{value}`" for value in item["format_hints"]))
     suffix = f" — {'; '.join(details)}" if details else ""
     return f"- `--{item['name']}` (from {item['source']}{kind}): `{item['value']}`{suffix}"
+
+
+def _environment_hint(summary: dict[str, Any]) -> dict[str, str]:
+    hint: dict[str, str] = {}
+    raw_hint = summary.get("environment_hint")
+    if isinstance(raw_hint, dict):
+        for key in ("observed_browser_type", "observed_provider"):
+            value = raw_hint.get(key)
+            if value:
+                hint[key] = str(value)
+    if summary.get("browser_type") and "observed_browser_type" not in hint:
+        hint["observed_browser_type"] = str(summary["browser_type"])
+    if summary.get("provider") and "observed_provider" not in hint:
+        hint["observed_provider"] = str(summary["provider"])
+    return hint
 
 
 def _render_validator(item: dict[str, Any]) -> str:
@@ -269,6 +285,7 @@ def generation_report(
         "workflow_schema_version": workflow.get("schema_version"),
         "validators": len(workflow.get("validators") or []),
         "parameters": workflow.get("parameters") or [],
+        "environment_hint": workflow.get("environment_hint") or {},
         "auth_branch": bool(workflow.get("auth")),
         "api_hints": api_scripts,
         "agents_skill_path": agents_path,

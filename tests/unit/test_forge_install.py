@@ -15,6 +15,7 @@ def test_install_copies_sanitized_skill(tmp_path: Path) -> None:
     text = (agents / "SKILL.md").read_text(encoding="utf-8")
     assert "Shinebed202603!" not in text
     assert "k1fvr63o" not in text
+    assert "<ads-user-id>" in text
     assert (agents / "scripts" / "extract.py").exists()
 
 

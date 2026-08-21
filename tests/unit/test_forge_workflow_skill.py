@@ -38,9 +38,40 @@ def test_generated_skill_is_replay_not_extract_shell(tmp_path: Path) -> None:
     assert "Component scripts" in text
     assert "download-artifact.py" in workflow["component_scripts"]
     assert (skill / "scripts" / "download-artifact.py").exists()
+    assert "## 运行参数" in text
+    assert "Browser type:" not in text
+    assert "<browser-name-or-id>" in text
+    assert "--ads-user-id <ads-user-id>" in text
+    assert "browser_type" not in workflow
     replay = workflow_actions(workflow, live={"url": workflow["last_url"], "title": "Dropship Orders"})
     assert replay
     assert all((item.get("match") or {}).get("placeholder") != "Email" for item in replay)
+
+
+def test_generated_skill_keeps_browser_selection_runtime_only(tmp_path: Path) -> None:
+    trace = tmp_path / "trace"
+    trace.mkdir()
+    (trace / "events.jsonl").write_text(FIXTURE.read_text(encoding="utf-8"), encoding="utf-8")
+
+    skill = ForgeEngine(tmp_path / "skills").generate(
+        trace,
+        "ads-report",
+        "download report",
+        browser_type="ads",
+        install=False,
+    )
+    text = (skill / "SKILL.md").read_text(encoding="utf-8")
+    workflow = __import__("json").loads((skill / "evidence" / "workflow.json").read_text(encoding="utf-8"))
+    report = __import__("json").loads((skill / "evidence" / "generation-report.json").read_text(encoding="utf-8"))
+
+    assert "Browser type:" not in text
+    assert "profile-1" not in text
+    assert "ads_user_id" not in text
+    assert "ads-user-id: profile" not in text
+    assert "<browser-name-or-id>" in text
+    assert workflow["environment_hint"] == {"observed_browser_type": "ads"}
+    assert "browser_type" not in workflow
+    assert report["environment_hint"] == workflow["environment_hint"]
 
 
 def test_engine_source_has_no_site_constants() -> None:

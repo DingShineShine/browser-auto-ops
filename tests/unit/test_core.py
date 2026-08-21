@@ -240,6 +240,7 @@ def test_get_skills_specialized_pages() -> None:
 
 def test_cli_browser_create_and_list(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("browser_auto_ops.cli._daemon_request", lambda *args, **kwargs: None)
     create = runner.invoke(
         app,
         [
