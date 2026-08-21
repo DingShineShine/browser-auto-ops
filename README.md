@@ -47,7 +47,7 @@ they will get after a stable release, so they should not read `.py` sources
 from `site-packages`.
 
 ```bash
-uv tool upgrade browser-auto-ops --python 3.12 || uv tool install browser-auto-ops --python 3.12
+uv tool install --force --python 3.12 browser-auto-ops==0.1.1
 bao --help
 bao get-skills core
 ```
@@ -59,7 +59,7 @@ https://github.com/DingShineShine/browser-auto-ops/tree/main/.agents/skills/brow
 ```
 
 Pushing GitHub does not update other machines. After you publish a new PyPI
-version, they run `uv tool upgrade`.
+version, update this pinned install command and have agents run it again.
 
 Cookies, ADS keys, downloads, and local `.bao/` state stay off the package.
 
