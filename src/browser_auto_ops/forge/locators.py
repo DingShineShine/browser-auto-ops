@@ -5,6 +5,7 @@ from typing import Any
 
 _CONTAINER_ROLES = {"dialog", "alertdialog", "menu", "listbox"}
 _CONTAINER_KINDS = {"dialog", "modal"}
+_WORD_STRIP_CHARS = " ,;:/|"
 
 
 def accessible_name(element: dict[str, Any]) -> str:
@@ -163,6 +164,46 @@ def locators_from_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]
     return rows
 
 
+def relaxed_match_payloads(locator: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return deterministic fallback matches for replay repair.
+
+    The locator table is intentionally strict for validation. Replay can be
+    more forgiving without invoking an LLM by dropping brittle fields and
+    relaxing exact text modes in a controlled order.
+    """
+
+    match = locator.get("match") if isinstance(locator.get("match"), dict) else {}
+    if not match:
+        return []
+    within = locator.get("within") if isinstance(locator.get("within"), dict) else None
+    base = dict(match)
+    if within:
+        base["within_role"] = within.get("role")
+        base["within_text"] = within.get("text")
+        if within.get("text_mode"):
+            base["within_text_mode"] = within.get("text_mode")
+
+    variants: list[dict[str, Any]] = []
+    no_kind = dict(base)
+    no_kind.pop("kind", None)
+    if no_kind != base:
+        variants.append(no_kind)
+
+    relaxed_text = _relax_text_modes(no_kind)
+    if relaxed_text != no_kind:
+        variants.append(relaxed_text)
+
+    role_name = _role_name_contains(no_kind)
+    if role_name:
+        variants.append(role_name)
+
+    shortest = _shortest_prefix_match(no_kind)
+    if shortest:
+        variants.append(shortest)
+
+    return _dedupe_matches(variants)
+
+
 def _checkpoint_from_action(action: dict[str, Any]) -> dict[str, Any] | None:
     result = action.get("result") if isinstance(action.get("result"), dict) else {}
     verification = result.get("verification")
@@ -229,7 +270,7 @@ def _shortest_unique_text_match(
     name = accessible_name(target)
     if not name:
         return None
-    words = [part.strip(" ,;:/|") for part in re.split(r"\s+", name) if len(part.strip(" ,;:/|")) >= 3]
+    words = [part.strip(_WORD_STRIP_CHARS) for part in re.split(r"\s+", name) if len(part.strip(_WORD_STRIP_CHARS)) >= 3]
     for size in range(1, min(len(words), 4) + 1):
         candidate = " ".join(words[:size])
         trial = dict(match)
@@ -320,6 +361,57 @@ def _match_label(match: dict[str, Any]) -> str:
         if value:
             return value
     return ""
+
+
+def _relax_text_modes(match: dict[str, Any]) -> dict[str, Any]:
+    relaxed = dict(match)
+    for key in ("text", "name", "label", "placeholder", "within_text"):
+        if relaxed.get(key) and relaxed.get(f"{key}_mode") == "exact":
+            relaxed[f"{key}_mode"] = "contains"
+    return relaxed
+
+
+def _role_name_contains(match: dict[str, Any]) -> dict[str, Any] | None:
+    label = _match_label(match)
+    if not label:
+        return None
+    payload: dict[str, Any] = {}
+    if match.get("role"):
+        payload["role"] = match.get("role")
+    payload["name"] = label
+    payload["name_mode"] = "contains"
+    for key in ("within_role", "within_text", "within_text_mode"):
+        if match.get(key):
+            payload[key] = match[key]
+    return payload
+
+
+def _shortest_prefix_match(match: dict[str, Any]) -> dict[str, Any] | None:
+    label = _match_label(match)
+    words = [part.strip(_WORD_STRIP_CHARS) for part in re.split(r"\s+", label) if len(part.strip(_WORD_STRIP_CHARS)) >= 3]
+    if not words:
+        return None
+    payload: dict[str, Any] = {}
+    if match.get("role"):
+        payload["role"] = match.get("role")
+    payload["text"] = " ".join(words[: min(3, len(words))])
+    payload["text_mode"] = "starts_with"
+    for key in ("within_role", "within_text", "within_text_mode"):
+        if match.get(key):
+            payload[key] = match[key]
+    return payload
+
+
+def _dedupe_matches(matches: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[tuple[tuple[str, Any], ...]] = set()
+    rows: list[dict[str, Any]] = []
+    for match in matches:
+        key = tuple(sorted((k, v) for k, v in match.items() if v not in (None, "")))
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(match)
+    return rows
 
 
 def _clean(value: Any) -> str:

@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 from typing import Any
 
-from browser_auto_ops.forge.ir import replayable_step_actions
+from browser_auto_ops.forge.ir import action_from_step, replayable_step_actions, step_locator
+from browser_auto_ops.forge.locators import relaxed_match_payloads
 
 
 def load_workflow(path_or_skill_dir: Path) -> dict[str, Any]:
@@ -30,6 +31,123 @@ def workflow_actions(workflow: dict[str, Any], *, live: dict[str, Any] | None = 
     return actions
 
 
+def workflow_replay_steps(workflow: dict[str, Any], *, live: dict[str, Any] | None = None) -> list[dict[str, Any]]:
+    """Return executable workflow steps while preserving step metadata.
+
+    `workflow_actions` is kept for older callers that only need ActionRequest
+    payloads. The replay runner needs step ids, types, and wait conditions so
+    failures can point at the exact generated workflow step.
+    """
+
+    steps = workflow.get("workflow_steps")
+    if isinstance(steps, list):
+        rows = _workflow_step_rows(workflow, steps, live)
+        if rows:
+            return rows
+
+    rows = []
+    for idx, action in enumerate(workflow_actions(workflow, live=live), start=1):
+        rows.append(
+            {
+                "id": f"legacy_{idx}",
+                "type": "browser_action",
+                "description": action.get("type") or "legacy action",
+                "legacy_action": action,
+            }
+        )
+    return rows
+
+
+def _workflow_step_rows(workflow: dict[str, Any], steps: list[Any], live: dict[str, Any] | None) -> list[dict[str, Any]]:
+    requires_auth = _live_requires_auth(live, workflow.get("auth") if isinstance(workflow.get("auth"), dict) else None)
+    rows: list[dict[str, Any]] = []
+    for step in steps:
+        if _is_replayable_step(step, workflow, requires_auth):
+            rows.append(step)
+    return rows
+
+
+def _is_replayable_step(step: Any, workflow: dict[str, Any], requires_auth: bool) -> bool:
+    if not isinstance(step, dict):
+        return False
+    if step.get("branch") == "auth" and not requires_auth:
+        return False
+    if step.get("type") == "fallback":
+        return False
+    if step.get("replay") is False:
+        return False
+    if step.get("type") == "artifact":
+        return True
+    return step.get("type") == "wait_condition" or bool(action_from_step(step, workflow))
+
+
+def action_for_replay_step(step: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any] | None:
+    if step.get("legacy_action"):
+        action = step["legacy_action"]
+        return action if isinstance(action, dict) else None
+    if step.get("type") == "wait_condition":
+        return None
+    return action_from_step(step, workflow)
+
+
+def action_candidates_for_replay_step(step: dict[str, Any], workflow: dict[str, Any]) -> list[dict[str, Any]]:
+    """Return ordered replay action candidates with resolution labels."""
+
+    action = action_for_replay_step(step, workflow)
+    if not action:
+        return []
+    candidates = [{"strategy": _primary_strategy(step), "action": action}]
+    if step.get("type") != "browser_action":
+        return candidates
+    locator = step_locator(step)
+    if not locator:
+        return candidates
+    strict = _action_from_locator(locator, workflow)
+    if strict:
+        candidates.append({"strategy": "strict_locator", "action": strict})
+    for match in relaxed_match_payloads(locator):
+        relaxed = _action_from_locator({**locator, "match": match, "within": None}, workflow)
+        if relaxed:
+            candidates.append({"strategy": _relaxed_strategy(match), "action": relaxed})
+    return _dedupe_action_candidates(candidates)
+
+
+def _primary_strategy(step: dict[str, Any]) -> str:
+    if isinstance(step.get("request"), dict):
+        return "recorded_request"
+    if step.get("legacy_action"):
+        return "legacy_action"
+    return "workflow_step"
+
+
+def _relaxed_strategy(match: dict[str, Any]) -> str:
+    if "kind" not in match and any(key in match for key in ("text", "name", "label", "placeholder")):
+        if any(match.get(f"{key}_mode") == "contains" for key in ("text", "name", "label", "placeholder")):
+            return "relaxed_locator_contains"
+        return "relaxed_locator_without_kind"
+    if match.get("name"):
+        return "role_name_contains"
+    if match.get("text_mode") == "starts_with":
+        return "scoped_shortest_unique_text"
+    return "relaxed_locator"
+
+
+def _dedupe_action_candidates(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    seen: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    for item in candidates:
+        action = item.get("action")
+        try:
+            key = json.dumps(action, sort_keys=True, ensure_ascii=False)
+        except Exception:
+            key = str(action)
+        if key in seen:
+            continue
+        seen.add(key)
+        rows.append(item)
+    return rows
+
+
 def _locators_for_live_state(workflow: dict[str, Any], live: dict[str, Any] | None) -> list[Any]:
     locators = workflow.get("locators") if isinstance(workflow.get("locators"), list) else []
     auth = workflow.get("auth") if isinstance(workflow.get("auth"), dict) else None
@@ -40,8 +158,8 @@ def _locators_for_live_state(workflow: dict[str, Any], live: dict[str, Any] | No
     return auth_locators + main_locators if _live_requires_auth(live, auth) else main_locators
 
 
-def _live_requires_auth(live: dict[str, Any] | None, auth: dict[str, Any]) -> bool:
-    if not live:
+def _live_requires_auth(live: dict[str, Any] | None, auth: dict[str, Any] | None) -> bool:
+    if not live or not auth:
         return False
     blob = f"{live.get('url') or ''} {live.get('title') or ''}".lower()
     rules = auth.get("login_required_when") if isinstance(auth.get("login_required_when"), dict) else {}

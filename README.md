@@ -47,7 +47,7 @@ they will get after a stable release, so they should not read `.py` sources
 from `site-packages`.
 
 ```bash
-uv tool install --force --python 3.12 browser-auto-ops==0.1.1
+uv tool install --force --python 3.12 browser-auto-ops==0.1.5
 bao --help
 bao get-skills core
 ```
@@ -68,7 +68,7 @@ Cookies, ADS keys, downloads, and local `.bao/` state stay off the package.
 PyPI rejects reusing a version. Each update for others needs a new number.
 
 1. Change code or `bao get-skills` text in `src/browser_auto_ops/cli.py`.
-2. Bump `[project].version` in `pyproject.toml` (`0.1.0` -> `0.1.1`).
+2. Bump `[project].version` in `pyproject.toml` (`0.1.4` -> `0.1.5`).
 3. Create a pypi.org API token once. Do not paste it into chat.
 4. Publish the compiled Windows wheel only:
 
@@ -80,7 +80,7 @@ powershell -File scripts/publish_pypi.ps1
 The script compiles core modules to `.pyd`, builds a platform wheel, and
 refuses to upload an sdist or a `py3-none-any` source wheel.
 
-Optional: `git tag v0.1.1` and push the tag.
+Optional: `git tag v0.1.5` and push the tag.
 
 ## Local development
 

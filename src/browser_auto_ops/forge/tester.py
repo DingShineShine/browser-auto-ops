@@ -6,6 +6,7 @@ from typing import Any, Callable
 import json
 from urllib.parse import parse_qs, urlparse
 
+from browser_auto_ops.forge.auth import auth_gate_failure
 from browser_auto_ops.schemas import ElementMatch, PageState
 from browser_auto_ops.snapshot.resolve import find_all
 
@@ -32,14 +33,16 @@ def evaluate_skill(
     if workflow and ("schema_version" in workflow or "workflow_steps" in workflow):
         checks.append({"name": "workflow_ir_v2", "ok": workflow.get("schema_version") == 2 and isinstance(workflow.get("workflow_steps"), list)})
         checks.append({"name": "validators_present", "ok": isinstance(workflow.get("validators"), list) and bool(workflow.get("validators"))})
+        if _expects_artifact(workflow):
+            checks.append({"name": "artifact_contract_present", "ok": _has_artifact_contract(workflow)})
     criteria = _criteria_from_workflow_or_text(workflow, text)
     locators = _live_locators(workflow)
     live_payload, live_reason = _resolve_live(live, inspect)
     if live_payload is not None:
-        checks.extend(_live_checks(live_payload, criteria, locators, state))
+        _append_live_checks(checks, workflow, live_payload, criteria, locators, state)
     else:
         checks.append({"name": "live_inspect", "ok": False, "reason": live_reason})
-    live_names = {"live_inspect", "live_url_criteria", "live_title_criteria", "live_controls"}
+    live_names = {"live_inspect", "live_url_criteria", "live_title_criteria", "live_controls", "live_auth_precheck"}
     static_ok = all(item["ok"] for item in checks if item["name"] not in live_names)
     live_ok = all(item["ok"] for item in checks if item["name"] in live_names) if live_payload is not None else True
     return {
@@ -47,6 +50,20 @@ def evaluate_skill(
         "skill_dir": str(skill_dir),
         "checks": checks,
     }
+
+
+def _append_live_checks(
+    checks: list[dict[str, Any]],
+    workflow: dict[str, Any],
+    live_payload: dict[str, Any],
+    criteria: list[str],
+    locators: list[Any],
+    state: PageState | dict[str, Any] | None,
+) -> None:
+    checks.extend(_live_checks(live_payload, criteria, locators, state))
+    auth_check = _live_auth_precheck_check(workflow, live_payload)
+    if auth_check:
+        checks.append(auth_check)
 
 
 def _resolve_live(
@@ -75,6 +92,18 @@ def _live_checks(
     return checks
 
 
+def _live_auth_precheck_check(workflow: dict[str, Any], live_payload: dict[str, Any]) -> dict[str, Any] | None:
+    failure = auth_gate_failure(workflow, live_payload)
+    if not failure:
+        return None
+    return {
+        "name": "live_auth_precheck",
+        "ok": False,
+        "reason": failure["reason"],
+        "message": failure["message"],
+    }
+
+
 def _has_replay(text: str) -> bool:
     if "复跑流程" in text:
         section = text.split("## 复跑流程", 1)[1].split("## ", 1)[0]
@@ -96,6 +125,28 @@ def _load_workflow(skill_dir: Path) -> dict[str, Any]:
         return payload if isinstance(payload, dict) else {}
     except Exception:
         return {}
+
+
+def _expects_artifact(workflow: dict[str, Any]) -> bool:
+    for step in workflow.get("workflow_steps") or []:
+        if isinstance(step, dict) and (step.get("artifact") or step.get("type") == "artifact"):
+            return True
+    for validator in workflow.get("validators") or []:
+        if isinstance(validator, dict) and validator.get("type") == "artifact":
+            return True
+    return False
+
+
+def _has_artifact_contract(workflow: dict[str, Any]) -> bool:
+    artifacts = workflow.get("artifacts")
+    if not isinstance(artifacts, list) or not artifacts:
+        return False
+    for artifact in artifacts:
+        if not isinstance(artifact, dict):
+            return False
+        if not artifact.get("from_step") or not artifact.get("validators"):
+            return False
+    return True
 
 
 def _criteria_from_workflow_or_text(workflow: dict[str, Any], text: str) -> list[str]:

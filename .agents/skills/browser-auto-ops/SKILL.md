@@ -4,8 +4,8 @@ description: "Use browser-auto-ops when the user asks to automate, inspect, or c
 allowed-tools: Bash(bao:*)
 metadata:
   author: browser-auto-ops
-  version: "0.1.1"
-  install: "uv tool install --force --python 3.12 browser-auto-ops==0.1.1"
+  version: "0.1.5"
+  install: "uv tool install --force --python 3.12 browser-auto-ops==0.1.5"
   homepage: "https://github.com/DingShineShine/browser-auto-ops"
   requires:
     runtime: "Python 3.12+, uv package manager"
@@ -29,7 +29,7 @@ Enterprise browser automation CLI for AI agents. Control employee local Chrome
 Install or refresh the compiled CLI from PyPI:
 
 ```bash
-uv tool install --force --python 3.12 browser-auto-ops==0.1.1
+uv tool install --force --python 3.12 browser-auto-ops==0.1.5
 ```
 
 ## Start here

@@ -12,28 +12,43 @@ from browser_auto_ops.snapshot.resolve import resolve_element
 
 
 class ActionExecutor:
-    async def execute(self, page: Page, state: PageState, request: ActionRequest) -> ActionResult:
+    async def execute(
+        self,
+        page: Page,
+        state: PageState,
+        request: ActionRequest,
+        *,
+        wait_after_action: bool = True,
+    ) -> ActionResult:
         started_type = request.type
         try:
             element = _request_element(state, request)
             reason = confirmation_reason(request, element)
             if reason and not request.require_confirm:
                 raise UnsafeActionError(reason)
-            return await self._dispatch(page, state, request)
+            return await self._dispatch(page, state, request, wait_after_action=wait_after_action)
         except Exception as exc:
             return ActionResult(type=started_type, success=False, message=str(exc))
 
-    async def _dispatch(self, page: Page, state: PageState, request: ActionRequest) -> ActionResult:
+    async def _dispatch(
+        self,
+        page: Page,
+        state: PageState,
+        request: ActionRequest,
+        *,
+        wait_after_action: bool,
+    ) -> ActionResult:
         handlers = {
-            "click": lambda: self._click(page, _element(state, request)),
-            "input_text": lambda: self._input(page, _element(state, request), request.text or ""),
+            "click": lambda: self._click(page, _element(state, request), wait_after_action=wait_after_action),
+            "input_text": lambda: self._input(page, _element(state, request), request.text or "", wait_after_action=wait_after_action),
             "select_option": lambda: self._select(
                 page,
                 _element(state, request),
                 request.option or request.text or "",
+                wait_after_action=wait_after_action,
             ),
             "hover": lambda: self._hover(page, _element(state, request)),
-            "scroll": lambda: self._scroll(page, request.direction or "down", request.amount or 500),
+            "scroll": lambda: self._scroll(page, request.direction or "down", request.amount or 500, wait_after_action=wait_after_action),
             "keypress": lambda: self._keypress(page, request),
             "upload_file": lambda: self._upload(page, _element(state, request), request.file_path),
             "execute_js": lambda: self._execute_js(page, request),
@@ -82,7 +97,7 @@ class ActionExecutor:
         await wait_stable(page)
         return ActionResult(type=request.type, success=True, message="stable")
 
-    async def _click(self, page: Page, element: StateElement) -> ActionResult:
+    async def _click(self, page: Page, element: StateElement, *, wait_after_action: bool = True) -> ActionResult:
         if element.occluded:
             raise ElementNotFoundError("element is occluded; handle the covering element and run `bao state` again")
         fresh_rect = await _fresh_action_rect(page, element)
@@ -93,12 +108,12 @@ class ActionExecutor:
                 await page.mouse.move(x, y)
                 await page.mouse.down()
                 await page.mouse.up()
-                await wait_stable(page)
+                await post_action_wait(page, stable=wait_after_action)
                 return ActionResult(type="click", success=True, message="clicked action target with mouse")
             except Exception:
                 pass
         await _js_click(page, element)
-        await wait_stable(page)
+        await post_action_wait(page, stable=wait_after_action)
         return ActionResult(type="click", success=True, message="clicked with JS fallback", fallback_used=True)
 
     async def _hover(self, page: Page, element: StateElement) -> ActionResult:
@@ -115,7 +130,7 @@ class ActionExecutor:
         await page.wait_for_timeout(250)
         return ActionResult(type="hover", success=True, message="hovered with JS fallback", fallback_used=True)
 
-    async def _input(self, page: Page, element: StateElement, text: str) -> ActionResult:
+    async def _input(self, page: Page, element: StateElement, text: str, *, wait_after_action: bool = True) -> ActionResult:
         if element.rect and element.frame_index == 0:
             try:
                 x = element.rect.x + element.rect.width / 2
@@ -124,23 +139,23 @@ class ActionExecutor:
                 await page.keyboard.press("Control+A")
                 await page.keyboard.press("Backspace")
                 await page.keyboard.type(text)
-                await wait_stable(page)
+                await post_action_wait(page, stable=wait_after_action)
                 return ActionResult(type="input_text", success=True, message="typed with keyboard")
             except Exception:
                 pass
         await _js_set_value(page, element, text)
-        await wait_stable(page)
+        await post_action_wait(page, stable=wait_after_action)
         return ActionResult(type="input_text", success=True, message="input with JS fallback", fallback_used=True)
 
-    async def _select(self, page: Page, element: StateElement, option: str) -> ActionResult:
+    async def _select(self, page: Page, element: StateElement, option: str, *, wait_after_action: bool = True) -> ActionResult:
         frame = _frame(page, element.frame_index)
         try:
             await frame.locator(f"xpath={element.locator.value}").select_option(label=option)
-            await wait_stable(page)
+            await post_action_wait(page, stable=wait_after_action)
             return ActionResult(type="select_option", success=True, message="selected option")
         except Exception:
             await _js_select_option(page, element, option)
-            await wait_stable(page)
+            await post_action_wait(page, stable=wait_after_action)
             return ActionResult(
                 type="select_option",
                 success=True,
@@ -148,7 +163,7 @@ class ActionExecutor:
                 fallback_used=True,
             )
 
-    async def _scroll(self, page: Page, direction: str, amount: int) -> ActionResult:
+    async def _scroll(self, page: Page, direction: str, amount: int, *, wait_after_action: bool = True) -> ActionResult:
         dx, dy = 0, 0
         if direction == "down":
             dy = amount
@@ -159,7 +174,7 @@ class ActionExecutor:
         elif direction == "left":
             dx = -amount
         await page.mouse.wheel(dx, dy)
-        await wait_stable(page)
+        await post_action_wait(page, stable=wait_after_action)
         return ActionResult(type="scroll", success=True, message=f"scrolled {direction} {amount}")
 
     async def _upload(self, page: Page, element: StateElement, file_path: Path | None) -> ActionResult:
@@ -180,6 +195,13 @@ async def wait_stable(page: Page, timeout_ms: int = 5_000) -> None:
     except Exception:
         pass
     await page.wait_for_timeout(300)
+
+
+async def post_action_wait(page: Page, *, stable: bool = True) -> None:
+    if stable:
+        await wait_stable(page)
+        return
+    await page.wait_for_timeout(100)
 
 
 def _element(state: PageState, request: ActionRequest) -> StateElement:

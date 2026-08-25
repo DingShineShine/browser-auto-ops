@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from browser_auto_ops import __version__
 from browser_auto_ops.schemas import NetworkRequestInfo
 
 
@@ -9,7 +10,7 @@ def to_har(items: list[NetworkRequestInfo]) -> dict[str, Any]:
     return {
         "log": {
             "version": "1.2",
-            "creator": {"name": "browser-auto-ops", "version": "0.1.1"},
+            "creator": {"name": "browser-auto-ops", "version": __version__},
             "entries": [_entry(item) for item in items],
         }
     }

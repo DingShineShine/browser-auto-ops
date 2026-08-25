@@ -16,7 +16,6 @@ from browser_auto_ops import __version__
 from browser_auto_ops.browsers import BrowserStore, provider_config_for_browser
 from browser_auto_ops.config import ensure_data_dirs
 from browser_auto_ops.forge import ForgeEngine
-from browser_auto_ops.forge.replay import load_workflow, workflow_actions
 from browser_auto_ops.forge.tester import evaluate_skill
 from browser_auto_ops.intelligence import ActService, ExtractService, ObserveService
 from browser_auto_ops.network import to_har
@@ -34,6 +33,7 @@ session_app = typer.Typer(help="Session lifecycle")
 network_app = typer.Typer(help="Network inspection")
 network_har_app = typer.Typer(help="Network HAR capture")
 forge_app = typer.Typer(help="Skill Forge")
+forge_params_app = typer.Typer(help="Review Forge runtime parameters")
 get_app = typer.Typer(help="Data extraction")
 tab_app = typer.Typer(help="Tab commands")
 cookies_app = typer.Typer(help="Cookie commands")
@@ -46,6 +46,7 @@ app.add_typer(session_app, name="session")
 network_app.add_typer(network_har_app, name="har")
 app.add_typer(network_app, name="network")
 app.add_typer(forge_app, name="forge")
+forge_app.add_typer(forge_params_app, name="params")
 app.add_typer(get_app, name="get")
 app.add_typer(tab_app, name="tab")
 app.add_typer(cookies_app, name="cookies")
@@ -1209,6 +1210,7 @@ def forge_generate(
     trace: Optional[Path] = typer.Option(None, "--trace"),
     session: Optional[str] = typer.Option(None, "--session"),
     goal: Optional[str] = typer.Option(None, "--goal"),
+    confirm_params: bool = typer.Option(False, "--confirm-params"),
 ) -> None:
     if session and trace:
         raise typer.BadParameter("use either --session or --trace, not both")
@@ -1216,7 +1218,7 @@ def forge_generate(
         raise typer.BadParameter("provide --session or --trace")
     if session:
         _require_matching_daemon()
-        payload = _daemon_request("POST", "/forge/generate", {"session": session, "name": name, "goal": goal})
+        payload = _daemon_request("POST", "/forge/generate", {"session": session, "name": name, "goal": goal, "confirm_params": confirm_params})
         _echo(payload, force_json=True)
         return
     root = ensure_data_dirs()
@@ -1248,6 +1250,66 @@ def forge_test(
     _echo(result, force_json=True)
     if not result.get("ok"):
         raise typer.Exit(code=1)
+
+
+@forge_app.command("run")
+def forge_run(
+    skill: str,
+    session: str = typer.Option(..., "--session"),
+    full: bool = typer.Option(False, "--full"),
+    param: Optional[list[str]] = typer.Option(None, "--param", help="Runtime parameter override as key=value"),
+    output_dir: Optional[Path] = typer.Option(None, "--output-dir"),
+) -> None:
+    """Run a generated workflow as the stable daily execution path."""
+
+    _require_matching_daemon()
+    skill_dir = _resolve_skill_dir(skill)
+    result = _daemon_request(
+        "POST",
+        "/forge/run",
+        {
+            "skill_dir": str(skill_dir),
+            "session": session,
+            "include_state": full,
+            "params": _parse_param_overrides(param or []),
+            "output_dir": str(output_dir) if output_dir else None,
+        },
+        timeout=720.0,
+    )
+    _echo(result, force_json=True)
+    if not (isinstance(result, dict) and result.get("ok")):
+        raise typer.Exit(code=1)
+
+
+@forge_params_app.command("review")
+def forge_params_review(skill: str) -> None:
+    """Show generated parameter candidates for a Forge skill."""
+
+    skill_dir = _resolve_skill_dir(skill)
+    workflow_path = skill_dir / "evidence" / "workflow.json"
+    if not workflow_path.exists():
+        _echo({"ok": False, "reason": f"workflow not found: {workflow_path}"}, force_json=True)
+        raise typer.Exit(code=1)
+    try:
+        workflow = json.loads(workflow_path.read_text(encoding="utf-8"))
+    except Exception as exc:
+        _echo({"ok": False, "reason": str(exc)}, force_json=True)
+        raise typer.Exit(code=1)
+    candidates = workflow.get("parameter_candidates") or []
+    unresolved = [item for item in candidates if isinstance(item, dict) and item.get("requires_confirmation")]
+    runtime_outputs = [item for item in candidates if isinstance(item, dict) and item.get("binding_scope") == "runtime_output"]
+    _echo(
+        {
+            "ok": True,
+            "skill_dir": str(skill_dir),
+            "requires_parameter_review": bool(workflow.get("requires_parameter_review")),
+            "parameters": workflow.get("parameters") or [],
+            "parameter_candidates": candidates,
+            "unresolved": unresolved,
+            "runtime_outputs": runtime_outputs,
+        },
+        force_json=True,
+    )
 
 
 def _forge_live_payload(session: str) -> Any:
@@ -1282,6 +1344,30 @@ def _forge_generate_result(skill_path: Path) -> dict[str, Any]:
         except Exception:
             report = {}
     return {"skill_path": str(skill_path), "generation_report": report}
+
+
+def _resolve_skill_dir(value: str) -> Path:
+    path = Path(value)
+    if path.exists():
+        return path
+    root = ensure_data_dirs()
+    candidate = root / "skills" / value
+    if candidate.exists():
+        return candidate
+    return path
+
+
+def _parse_param_overrides(values: list[str]) -> dict[str, str]:
+    params: dict[str, str] = {}
+    for value in values:
+        if "=" not in value:
+            raise typer.BadParameter("--param must use key=value")
+        key, raw = value.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise typer.BadParameter("--param key cannot be empty")
+        params[key] = raw
+    return params
 
 
 @app.command("get-skills")
@@ -1853,12 +1939,14 @@ Describe → Explore → Generate → Self-test.
 bao forge generate --session <name> --name <skill-name> --goal "the user goal"
 bao forge test .bao/skills/<skill-name> --session <name>
 bao forge test .bao/skills/<skill-name> --session <name> --replay
+bao forge run <skill-name-or-dir> --session <name>
 ```
 
-4. If `forge test --session` passes, do not re-explore by default. Replay the generated `.agents/skills/<skill-name>` copy. Use `--replay` before business-critical reuse; it clicks through locators and stops on first failure without rewriting the Skill.
-5. Login and other account-changing actions need `--confirm`. Do not commit passwords, cookies, or Ads profile ids.
+4. Generate writes `.bao/skills/<skill-name>` for runtime evidence and `.agents/skills/<skill-name>` as the agent-facing copy.
+5. If `forge test --session --replay` passes, use `forge run` as the daily/weekly execution path. Do not re-explore by default and do not ask an agent to re-read the full `SKILL.md` for routine reuse.
+6. Login and other account-changing actions need `--confirm`. Do not commit passwords, cookies, or Ads profile ids.
 
-`bao forge test` must pass replay/locator/success-criteria checks. A `SKILL.md` plus `capability.py` existing is not enough.
+`bao forge test` must pass replay/locator/success-criteria checks. A `SKILL.md` plus `capability.py` existing is not enough. `forge run` executes the generated `evidence/workflow.json`, stops on the first failed step, and writes repair evidence instead of self-repairing the skill.
 """
     if name == "chrome-direct":
         return """# browser-auto-ops chrome-direct

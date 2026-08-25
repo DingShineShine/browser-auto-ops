@@ -114,7 +114,14 @@ class SessionManager:
         managed.trace.save_json("states", f"{_stamp()}.json", state)
         return state
 
-    async def action(self, session_id: str, request: ActionRequest) -> tuple[ActionResult, PageState | None]:
+    async def action(
+        self,
+        session_id: str,
+        request: ActionRequest,
+        *,
+        capture_state: bool = True,
+        wait_after_action: bool = True,
+    ) -> tuple[ActionResult, PageState | None]:
         managed = self._managed(session_id)
         before_state = managed.last_state or await self.state(session_id)
         before_facts = await self._connection_facts(managed.connection)
@@ -123,14 +130,14 @@ class SessionManager:
         except Exception:
             pass
         managed.trace.event("action.request", request)
-        result = await self.executor.execute(managed.connection.page, before_state, request)
+        result = await self.executor.execute(managed.connection.page, before_state, request, wait_after_action=wait_after_action)
         if request.type not in {"screenshot", "execute_js", "extract"}:
-            await self._reconcile_after_action(managed, before_facts)
+            await self._reconcile_after_action(managed, before_facts, wait_stable_after=wait_after_action)
         after_facts = await self._connection_facts(managed.connection)
         result.verification = _verification_payload(before_facts, after_facts)
         managed.trace.event("action.result", result)
         after_state: PageState | None = None
-        if request.type not in {"screenshot", "execute_js", "extract"}:
+        if capture_state and request.type not in {"screenshot", "execute_js", "extract"}:
             after_state = await self.state(session_id)
             _apply_action_verification(before_state, after_state, request, result)
         return result, after_state
@@ -178,8 +185,14 @@ class SessionManager:
         )
         self._sync_session_from_connection(self.sessions[session.session_id])
 
-    async def _reconcile_after_action(self, managed: ManagedSession, before: PageFacts) -> None:
-        deadline = asyncio.get_event_loop().time() + 3.0
+    async def _reconcile_after_action(
+        self,
+        managed: ManagedSession,
+        before: PageFacts,
+        *,
+        wait_stable_after: bool = True,
+    ) -> None:
+        deadline = asyncio.get_event_loop().time() + (3.0 if wait_stable_after else 0.5)
         switched = False
         while asyncio.get_event_loop().time() < deadline:
             switched = await self._adopt_new_page_if_needed(managed, before) or switched
@@ -187,10 +200,11 @@ class SessionManager:
             if switched or facts.target_id != before.target_id or facts.url != before.url:
                 break
             await asyncio.sleep(0.2)
-        try:
-            await wait_stable(managed.connection.page)
-        except Exception:
-            pass
+        if wait_stable_after:
+            try:
+                await wait_stable(managed.connection.page)
+            except Exception:
+                pass
         if switched:
             self._archive_network(managed)
             managed.network = NetworkRecorder(managed.connection.page)

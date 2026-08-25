@@ -7,6 +7,8 @@ from typing import Any
 
 
 DropReason = Callable[[Any], str | None]
+_DOCUMENT_TITLE_SCRIPT = "document.title"
+_ASSERT_TITLE_INTENT = "assert current page title"
 
 
 def build_workflow_steps(
@@ -77,7 +79,7 @@ def _action_facts(index: int, action: Any, drop_reason: DropReason) -> dict[str,
 
 
 def _failed(result: dict[str, Any]) -> bool:
-    return bool(result and result.get("success") is False)
+    return bool(result and (result.get("success") is False or _semantic_failure(result.get("data"))))
 
 
 def _maybe_consume_locator(
@@ -131,9 +133,11 @@ def workflow_step_lines(steps: list[dict[str, Any]]) -> list[str]:
     for step in steps:
         if step.get("branch") == "auth":
             continue
-        text = str(step.get("description") or step.get("id") or step.get("type") or "step")
-        if step.get("fallback_for"):
-            text += " (fallback)"
+        if step.get("type") == "fallback":
+            continue
+        if step.get("purpose") in {"diagnostic", "verification"}:
+            continue
+        text = str(step.get("intent") or step.get("description") or step.get("id") or step.get("type") or "step")
         rows.append(text)
     return rows
 
@@ -165,17 +169,101 @@ def replayable_step_actions(workflow: dict[str, Any], *, live: dict[str, Any] | 
 def action_from_step(step: dict[str, Any], workflow: dict[str, Any]) -> dict[str, Any] | None:
     step_type = str(step.get("type") or "")
     if step_type == "browser_action":
+        recorded = _action_from_recorded_request(step)
+        if recorded:
+            return recorded
         locator = step_locator(step)
         if not locator:
             return None
         return _action_from_locator(locator, workflow)
     if step_type == "wait_condition":
         return {"type": "wait"}
+    if step_type == "api_call":
+        structured = _structured_api_action(step)
+        if structured:
+            return structured
     if step_type in {"eval_helper", "api_call", "assertion"} and step.get("script"):
         action = {"type": "execute_js", "script": step.get("script") or ""}
         if step.get("require_confirm"):
             action["require_confirm"] = True
         return action
+    return None
+
+
+def _structured_api_action(step: dict[str, Any]) -> dict[str, Any] | None:
+    request = step.get("request") if isinstance(step.get("request"), dict) else {}
+    if request.get("script") or step.get("script"):
+        return None
+    url = request.get("url")
+    if not isinstance(url, str) or not url:
+        return None
+    script = _structured_api_script(
+        url=url,
+        method=str(request.get("method") or "GET").upper(),
+        headers=request.get("headers") if isinstance(request.get("headers"), dict) else {},
+        body=request.get("body_template", request.get("body")),
+        response_mode=str(request.get("response_mode") or step.get("response_mode") or "json").lower(),
+    )
+    action = {"type": "execute_js", "script": script}
+    if step.get("require_confirm"):
+        action["require_confirm"] = True
+    return action
+
+
+def _structured_api_script(*, url: str, method: str, headers: dict[str, Any], body: Any, response_mode: str) -> str:
+    url_literal = json.dumps(url, ensure_ascii=False)
+    method_literal = json.dumps(method, ensure_ascii=False)
+    headers_literal = json.dumps(headers, ensure_ascii=False)
+    body_literal = "undefined" if body is None else json.dumps(body, ensure_ascii=False)
+    response_mode_literal = json.dumps(response_mode, ensure_ascii=False)
+    return f"""
+(async function() {{
+  try {{
+    const body = {body_literal};
+    const responseMode = {response_mode_literal};
+    const init = {{
+      method: {method_literal},
+      headers: {headers_literal},
+      credentials: 'include'
+    }};
+    if (body !== undefined) {{
+      init.body = typeof body === 'string' ? body : JSON.stringify(body);
+    }}
+    const res = await fetch({url_literal}, init);
+    const contentType = res.headers.get('content-type') || '';
+    if (responseMode === 'base64') {{
+      const buf = await res.arrayBuffer();
+      const bytes = new Uint8Array(buf);
+      let binary = '';
+      for (let i = 0; i < bytes.length; i += 8192) {{
+        binary += String.fromCharCode.apply(null, bytes.subarray(i, i + 8192));
+      }}
+      return JSON.stringify({{
+        ok: res.ok,
+        status: res.status,
+        contentType,
+        bytes: bytes.length,
+        base64: btoa(binary)
+      }});
+    }}
+    const text = await res.text();
+    let response;
+    try {{ response = JSON.parse(text); }} catch (e) {{ response = text; }}
+    return JSON.stringify({{ok: res.ok, status: res.status, contentType, response}});
+  }} catch (e) {{
+    return JSON.stringify({{error: true, message: e.message}});
+  }}
+}})()
+""".strip()
+
+
+def _action_from_recorded_request(step: dict[str, Any]) -> dict[str, Any] | None:
+    request = step.get("request")
+    if not isinstance(request, dict):
+        return None
+    action_type = str(request.get("type") or "")
+    if action_type in {"click", "input_text", "select_option", "goto_url", "scroll", "keypress", "upload_file"}:
+        return dict(request)
     return None
 
 
@@ -196,8 +284,10 @@ def _step_from_action(
             "locator": locator,
             "request": _public_request(request),
             "checkpoint": action.get("checkpoint"),
+            "intent": _browser_description(locator, request),
             "description": _browser_description(locator, request),
             "replay": True,
+            "purpose": "business_action",
         }
     if action_type == "wait":
         return {
@@ -206,6 +296,7 @@ def _step_from_action(
             "condition": "stable",
             "description": "wait until the page is stable",
             "replay": True,
+            "purpose": "wait",
         }
     if action_type == "execute_js":
         return _execute_js_step(index, request, result)
@@ -216,6 +307,7 @@ def _step_from_action(
             "artifact": "screenshot",
             "description": "capture a screenshot for visual inspection",
             "replay": False,
+            "purpose": "diagnostic",
         }
     if action_type == "extract":
         return {
@@ -223,6 +315,7 @@ def _step_from_action(
             "type": "assertion",
             "description": "extract page content for verification",
             "replay": False,
+            "purpose": "diagnostic",
         }
     if reason == "missing_target" and action_type:
         return {
@@ -231,6 +324,7 @@ def _step_from_action(
             "request": _public_request(request),
             "description": f"unresolved {action_type} action kept for repair",
             "replay": False,
+            "purpose": "diagnostic",
         }
     return None
 
@@ -239,24 +333,61 @@ def _execute_js_step(index: int, request: dict[str, Any], result: dict[str, Any]
     script = str(request.get("script") or "")
     data = result.get("data")
     kind = _execute_js_kind(script, data)
+    intent = _execute_js_intent(kind, script, data)
     step: dict[str, Any] = {
         "id": _step_id(index, kind),
         "type": kind,
         "script": script,
         "request": _public_request(request),
         "result_preview": _result_preview(data),
+        "intent": intent,
         "description": _execute_js_description(kind, script, data),
         "replay": kind in {"eval_helper", "api_call", "assertion"},
+        "purpose": _execute_js_purpose(kind, intent, data),
     }
     if request.get("require_confirm") or kind == "api_call":
         step["require_confirm"] = bool(request.get("require_confirm"))
     if kind == "api_call" and _result_has_base64(data):
         step["artifact"] = {"encoding": "base64", "source": "page_fetch"}
+    predicates = _semantic_predicates(data)
+    if predicates:
+        step.update(predicates)
+    outputs, samples = _outputs_from_result(data)
+    if outputs:
+        step["outputs"] = outputs
+        step["output_samples"] = samples
     return step
+
+
+def _semantic_failure(data: Any) -> bool:
+    parsed = _parse_json(data) if isinstance(data, str) else data
+    if not isinstance(parsed, dict):
+        return False
+    return parsed.get("error") is True or parsed.get("ok") is False or parsed.get("success") is False
+
+
+def _semantic_predicates(data: Any) -> dict[str, Any]:
+    parsed = _parse_json(data) if isinstance(data, str) else data
+    if not isinstance(parsed, dict):
+        return {}
+    predicates: dict[str, Any] = {}
+    if "error" in parsed:
+        predicates["failure_predicate"] = {"json_path": "$.error", "equals": True}
+    if parsed.get("clicked") is True:
+        predicates["success_predicate"] = {"json_path": "$.clicked", "equals": True}
+    elif parsed.get("ok") is True:
+        predicates["success_predicate"] = {"json_path": "$.ok", "equals": True}
+    elif parsed.get("success") is True:
+        predicates["success_predicate"] = {"json_path": "$.success", "equals": True}
+    elif any(key in parsed for key in ("selected", "value", "reportId", "latestId", "downloadReady")):
+        predicates["success_predicate"] = {"json_path": "$", "exists": True}
+    return predicates
 
 
 def _execute_js_kind(script: str, data: Any) -> str:
     blob = f"{script} {_jsonish(data)}".lower()
+    if any(marker in blob for marker in ("latestid", "downloadready", "downloadurl", "reportid")):
+        return "api_call"
     if "fetch(" in blob or "/download" in blob or "base64" in blob or "arraybuffer" in blob:
         return "api_call"
     if any(marker in blob for marker in (".click(", "dispatchEvent", "scrollTop", "querySelector", "getPropertyDescriptor")):
@@ -272,9 +403,91 @@ def _execute_js_description(kind: str, script: str, data: Any) -> str:
     preview = _result_preview(data)
     if isinstance(preview, dict) and preview:
         return "assert page state from JavaScript result"
-    if "document.title" in script:
-        return "assert current page title"
+    if _DOCUMENT_TITLE_SCRIPT in script:
+        return _ASSERT_TITLE_INTENT
     return "inspect page state with JavaScript"
+
+
+def _execute_js_intent(kind: str, script: str, data: Any) -> str:
+    blob = f"{script} {_jsonish(data)}"
+    if kind == "assertion":
+        if _DOCUMENT_TITLE_SCRIPT in script:
+            return _ASSERT_TITLE_INTENT
+        return "inspect page state"
+    report_name = _report_name_from_data(data) or _literal_assigned_to_value(script) or _literal_after(blob, "wayfair_adv_reports")
+    if "reportName" in blob and report_name:
+        return f"fill report name `{report_name}`"
+    for needles, intent in _INTENT_RULES:
+        if all(needle in blob for needle in needles):
+            return intent
+    calendar_day = re.search(r"\b[A-Z][a-z]+ \d{1,2}, \d{4}\b", blob)
+    if calendar_day:
+        return f"select calendar day `{calendar_day.group(0)}`"
+    api_intent = _api_intent(kind, blob)
+    if api_intent:
+        return api_intent
+    if kind == "eval_helper":
+        return "run DOM helper for recorded UI step"
+    return "inspect page state"
+
+
+def _execute_js_purpose(kind: str, intent: str, data: Any) -> str:
+    if kind == "assertion":
+        return "verification" if intent == _ASSERT_TITLE_INTENT else "diagnostic"
+    if kind == "api_call" and _result_has_base64(data):
+        return "artifact"
+    if kind in {"api_call", "eval_helper"}:
+        return "business_action"
+    return "diagnostic"
+
+
+_POLL_STATUS_INTENT = "poll generated row status and capture runtime outputs"
+
+_INTENT_RULES = [
+    ((_DOCUMENT_TITLE_SCRIPT,), _ASSERT_TITLE_INTENT),
+    (("latestId",), _POLL_STATUS_INTENT),
+    (("downloadReady",), _POLL_STATUS_INTENT),
+    (("Complete",), _POLL_STATUS_INTENT),
+    (("Date Range", "Custom Date Range"), "select `Custom Date Range` in `Date Range`"),
+    (("Group Data By", "Day"), "select `Day` in `Group Data By`"),
+    (("Start Date",), "open `Start Date` date picker"),
+    (("End Date",), "open `End Date` date picker"),
+    (("Product Report", ".click("), "select `Product Report`"),
+    (("Terms of Service",), "accept Terms of Service"),
+    (("Generate Report",), "click `Generate Report`"),
+]
+
+
+def _api_intent(kind: str, blob: str) -> str:
+    if kind != "api_call":
+        return ""
+    if "base64" in blob or "/download" in blob:
+        return "download artifact from authenticated page API"
+    if kind == "api_call":
+        return "execute authenticated page API call"
+    return ""
+
+
+def _literal_after(blob: str, marker: str) -> str:
+    index = blob.find(marker)
+    if index < 0:
+        return ""
+    window = blob[index : index + 160]
+    quoted = re.search(r'"([^"]{3,100})"', window)
+    return quoted.group(1) if quoted else ""
+
+
+def _report_name_from_data(data: Any) -> str:
+    parsed = _parse_json(data) if isinstance(data, str) else data
+    if isinstance(parsed, dict):
+        value = parsed.get("reportName") or parsed.get("latestName") or parsed.get("name")
+        return str(value) if value else ""
+    return ""
+
+
+def _literal_assigned_to_value(script: str) -> str:
+    match = re.search(r"\b(?:const|let|var)\s+value\s*=\s*\"([^\"]{3,120})\"", script)
+    return match.group(1) if match else ""
 
 
 def _fallback_step(index: int, request: dict[str, Any], result: dict[str, Any], reason: str) -> dict[str, Any]:
@@ -391,6 +604,27 @@ def _preview_value(key: str, value: Any) -> Any:
 def _result_has_base64(data: Any) -> bool:
     parsed = _parse_json(data) if isinstance(data, str) else data
     return isinstance(parsed, dict) and bool(parsed.get("base64") or parsed.get("response_body_base64"))
+
+
+def _outputs_from_result(data: Any) -> tuple[dict[str, str], dict[str, Any]]:
+    parsed = _parse_json(data) if isinstance(data, str) else data
+    if not isinstance(parsed, dict):
+        return {}, {}
+    outputs: dict[str, str] = {}
+    samples: dict[str, Any] = {}
+    for key, name in {
+        "latestId": "report_id",
+        "reportId": "report_id",
+        "report_id": "report_id",
+        "downloadUrl": "download_url",
+        "download_url": "download_url",
+        "filename": "filename",
+    }.items():
+        value = parsed.get(key)
+        if isinstance(value, str) and value:
+            outputs[name] = f"$.{key}"
+            samples[name] = value
+    return outputs, samples
 
 
 def _parse_json(value: str) -> Any:
